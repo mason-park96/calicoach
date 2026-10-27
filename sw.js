@@ -1,5 +1,5 @@
-const CACHE = 'calicoach-shell-v1.1.0';
-const FILES = ['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png','./icons/apple-touch-icon.png'];
+const CACHE = 'calicoach-shell-v1.4.0';
+const FILES = ['./','./index.html','./styles.css','./app.js','./coach-engine.js','./exercise-guides.js','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png','./icons/apple-touch-icon.png','./media/bird.gif','./media/bridge.gif','./media/chairsquat.gif','./media/clam.gif','./media/closepush.gif','./media/cool1.gif','./media/cool2.gif','./media/dead.gif','./media/hipabduct.gif','./media/incline.gif','./media/knee.gif','./media/plank.gif','./media/prep1.gif','./media/prep2.gif','./media/prep3.gif','./media/prep4.gif','./media/push.gif','./media/reverse.gif','./media/sideleft.gif','./media/sideright.gif','./media/singlebridge.gif','./media/snowangel.gif','./media/split.gif','./media/squat.gif','./media/tempo.gif','./media/temposquat.gif','./media/traise.gif','./media/wall.gif','./media/wraise.gif'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES)).then(() => self.skipWaiting()));
 });
