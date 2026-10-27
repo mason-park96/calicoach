@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Calicoach per-exercise Pexels API downloader + manual review workflow.
+# Calicoach Pexels API / licensed direct MP4 downloader + review workflow.
 # Python 3.10+, no third-party libraries. NEVER commit an API key to GitHub.
 import argparse, json, os, sys, urllib.request, urllib.error, shutil, subprocess
 from pathlib import Path
@@ -28,10 +28,15 @@ def select_mp4(data):
 
 
 def download(entry,key):
-    data=api_lookup(entry['video_id'],key)
-    if int(data.get('id') or -1)!=entry['video_id']:
-        raise RuntimeError('Unexpected Pexels video ID')
-    choice=select_mp4(data)
+    if entry['provider']=='Pexels':
+        data=api_lookup(entry['video_id'],key)
+        if int(data.get('id') or -1)!=entry['video_id']:
+            raise RuntimeError('Unexpected Pexels video ID')
+        choice=select_mp4(data)
+    elif entry['provider']=='Mixkit' and entry.get('download_url'):
+        choice={'link':entry['download_url']}
+    else:
+        raise RuntimeError('Unsupported video provider')
     PENDING.mkdir(parents=True,exist_ok=True)
     dest=PENDING/entry['filename']
     tmp=dest.with_suffix('.part')
@@ -58,9 +63,16 @@ def catalog_from_files():
     approved=[]
     for key,entry in SOURCES.items():
         if (VIDEOS/entry['filename']).is_file():
-            approved.append((key,{'file':f'./media/videos/{entry["filename"]}','url':entry['url'],'creator':entry['creator'],'license':entry['license']}))
+            clip={'file':f'./media/videos/{entry["filename"]}','url':entry['url'],'creator':entry['creator'],'license':entry['license'],'provider':entry['provider']}
+            if entry.get('license_url'): clip['license_url']=entry['license_url']
+            if entry.get('input_file'): clip['original_file']='./'+entry['input_file']
+            for field in ('display_label', 'display_note'):
+                if entry.get(field): clip[field]=entry[field]
+            poster=VIDEOS/(Path(entry['filename']).stem+'.jpg')
+            if poster.is_file(): clip['poster']=f'./media/videos/{poster.name}'
+            approved.append((key,clip))
     value={key:obj for key,obj in approved}
-    CATALOG.write_text('/* Only manually approved exercise clips. Source: tools/video_sources.json */\nwindow.CalicoachVideoCatalog = Object.freeze('+json.dumps(value,ensure_ascii=False,indent=2)+');\n',encoding='utf-8')
+    CATALOG.write_text('/* Active exercise clips. Source: tools/video_sources.json */\nwindow.CalicoachVideoCatalog = Object.freeze('+json.dumps(value,ensure_ascii=False,indent=2)+');\n',encoding='utf-8')
     print(f'Active catalog: {len(value)} clip(s)')
 
 
@@ -92,9 +104,11 @@ def main():
         p.error('Please give an exercise ID from list (fetch also accepts all)')
     if args.action=='fetch':
         key=os.environ.get('PEXELS_API_KEY','').strip()
-        if not key:
+        entries=[item for item in SOURCES.values() if item['provider']!='사용자 제공'] if args.exercise=='all' else [SOURCES[args.exercise]]
+        if any(item['provider']=='사용자 제공' for item in entries):
+            p.error('Local GIF sources: run tools/import_user_media.py to rebuild them.')
+        if not key and any(item['provider']=='Pexels' for item in entries):
             p.error('Missing PEXELS_API_KEY. Get a free key from https://www.pexels.com/api/ and set it in your Windows terminal. NEVER commit the key.')
-        entries=list(SOURCES.values()) if args.exercise=='all' else [SOURCES[args.exercise]]
         errors=0
         for item in entries:
             try: download(item,key)

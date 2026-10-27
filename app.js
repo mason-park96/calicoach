@@ -58,6 +58,7 @@
   function loadDevice(){
     try{
       const existing=JSON.parse(localStorage.getItem(DEVICE_KEY));
+      if(existing && existing.profile===null)return normalizeData(existing);
       if(existing && savedProfileValid(existing.profile))return normalizeData(existing);
     }catch{}
     // 과거 3인 버전: 저장된 선택 정보가 있고 해당 사용자 프로필이 유효하면 우선합니다.
@@ -82,6 +83,8 @@
   let audioContext = null;
   let wakeLock = null;
   let latestAnnouncement = '';
+  let historyMonth=dateStr().slice(0,7), historyDay=null;
+  let weightMonth=dateStr().slice(0,7), weightMessage='';
   const exercise = {
     knee: {title:'무릎 푸시업',glyph:'↗',type:'reps',amount:10,range:'8~12회',unit:'회',cue:'무릎을 바닥에 두고 어깨부터 무릎까지 곧게 유지하며 팔을 굽히세요.',tips:['손바닥은 어깨 바로 아래나 조금 바깥에 둡니다.','허리를 꺾지 않고 천천히 내려갑니다.','손목이 불편하면 높은 지지대에서 푸시업합니다.']},
     push: {title:'푸시업',glyph:'↗',type:'reps',amount:8,range:'6~12회',unit:'회',cue:'몸을 일직선으로 유지하고 허리가 꺾이지 않게 내려가세요.',tips:['손은 어깨보다 조금 넓게 짚습니다.','내려갈 때 숨을 들이쉬고 올라오며 내쉽니다.','정자세로 6회가 어렵다면 무릎 푸시업으로 바꿉니다.']},
@@ -99,7 +102,7 @@
     plank:{title:'플랭크',glyph:'━',type:'timed',amount:30,range:'20~40초',unit:'초',cue:'배에 힘을 주고 허리를 처뜨리거나 과하게 들지 마세요.',tips:['어깨 아래 팔꿈치를 두고 호흡합니다.','허리가 아프면 시간을 줄이거나 무릎을 댑니다.','무조건 오래 버티는 것보다 자세가 중요합니다.']},
     prep1:{title:'어깨·팔 가볍게 풀기',glyph:'◌',type:'timed',amount:60,unit:'초',cue:'어깨를 천천히 돌리고 팔을 가볍게 앞뒤로 움직이세요.',tips:['어깨 힘을 빼고 편안하게 반복합니다.']},
     prep2:{title:'고관절 워밍업',glyph:'↔',type:'timed',amount:60,unit:'초',cue:'무릎을 조금 굽힌 채 골반과 고관절을 편안하게 움직이세요.',tips:['허리를 과하게 굽히거나 비틀지 않습니다.']},
-    prep3:{title:'앉아서 무릎 번갈아 들기',glyph:'⇧',type:'timed',amount:60,unit:'초',cue:'의자에 앉아 무릎을 번갈아 가볍게 들어 올리세요.',tips:['발바닥 부담 없이 몸을 가볍게 데웁니다.']},
+    prep3:{title:'앉아서 무릎 펴기',glyph:'⇧',type:'timed',amount:60,unit:'초',cue:'의자에 앉아 한쪽 무릎을 천천히 펴서 다리를 앞으로 뻗었다 내리고 반대쪽도 반복하세요.',tips:['상체를 세우고 무릎을 강하게 잠그지 않습니다.','발바닥 부담 없이 편안한 범위로 움직입니다.']},
     prep4:{title:'복부 긴장·호흡',glyph:'◎',type:'timed',amount:60,unit:'초',cue:'편하게 서거나 누워서 숨을 쉬며 몸통에 가볍게 힘을 주세요.',tips:['호흡을 참지 않고 허리를 편안하게 유지합니다.']},
     cool1:{title:'종아리·발바닥 가볍게 풀기',glyph:'≈',type:'timed',amount:60,unit:'초',cue:'앉아서 발목과 발가락을 부드럽게 움직여 주세요.',tips:['늘어나는 느낌 정도로만, 아플 정도로 당기지 않습니다.']},
     cool2:{title:'호흡하며 마무리',glyph:'◯',type:'timed',amount:60,unit:'초',cue:'편안하게 호흡하며 몸의 긴장을 풀어 주세요.',tips:['운동 후 허리와 발바닥 상태를 확인합니다.']}
@@ -118,15 +121,17 @@
   const Guides=window.CalicoachGuides?.guides||{};
   const Coach=window.CalicoachEngine;
   if(!Coach)throw Error('운동 계획 엔진을 불러오지 못했습니다. 앱을 새로고침하세요.');
-  const mediaSrc=id=>`./media/${encodeURIComponent(id)}.gif`;
+  const mediaSrc=id=>VideoCatalog[id]?.original_file||`./media/${encodeURIComponent(id)}.gif`;
   const VideoCatalog=window.CalicoachVideoCatalog||{};
   const SourceCandidates=window.CalicoachSourceCandidates||{};
   const videoSource=id=>VideoCatalog[id]?.file||null;
+  const mediaLabel=id=>VideoCatalog[id]?.display_label||'실제 사람 동작 시연';
   function mediaHtml(id,small=false){
     const alt=escapeHtml(exercise[id]?.title||'운동');
     const gif=`<img src="${mediaSrc(id)}" alt="${alt} 동작 개념 애니메이션" class="${small?'exercise-preview-gif':'exercise-motion-gif'}" loading="${small?'lazy':'eager'}" />`;
-    if(small||!videoSource(id))return gif;
-    return `<video class="exercise-real-video" data-id="${id}" src="${escapeHtml(videoSource(id))}" poster="${mediaSrc(id)}" muted autoplay loop playsinline preload="metadata" aria-label="${alt} 실제 사람 동작 시연"></video>`;
+    if(!videoSource(id))return gif;
+    const poster=VideoCatalog[id].poster;
+    return `<video class="${small?'exercise-preview-video':'exercise-real-video'}" data-id="${id}" src="${escapeHtml(videoSource(id))}"${poster?` poster="${escapeHtml(poster)}"`:''} muted autoplay loop playsinline preload="metadata" aria-label="${alt} ${escapeHtml(mediaLabel(id))}"></video>`;
   }
   const stepKey=step=>`${step.phase}:${step.round}:${step.id}`;
   const PLANS = {
@@ -180,7 +185,7 @@
     const nextMon = new Date(monday);nextMon.setDate(nextMon.getDate()+7);
     return data.workouts.filter(w => {const t = new Date(w.completedAt); return t>=monday && t<nextMon;});
   }
-  const latestWeight=()=>[...data.weights].sort((a,b)=>a.date.localeCompare(b.date)).at(-1)?.weight ?? Number(data.profile?.weight||0);
+  const latestWeight=()=>weightRecords().at(-1)?.weight ?? Number(data.profile?.weight||0);
   const goalWeight=()=>Number(data.profile?.targetWeight||data.settings.targetWeight||0);
   function profileAge(birthdate){
     if(!birthdate)return '미입력';
@@ -240,7 +245,7 @@
   }
   function header(){return `<header class="topbar"><div class="brand">CALI<span class="brand-dot">.</span>COACH</div><div class="topright"><span class="status-dot"></span> ${data.profile?.name?escapeHtml(data.profile.name):'MY TRAINING SPACE'}</div></header>`;}
   function navigation(active) {
-    return `<nav class="bottomnav" aria-label="하단 메뉴">${[['home','홈'],['history','기록'],['settings','설정']].map(([id,text])=>`<button class="tab ${active===id?'active':''}" data-action="nav" data-value="${id}" aria-label="${text}" ${active===id?'aria-current="page"':''}>${icon(id==='history'?'chart':id)}<span>${text}</span></button>`).join('')}</nav>`;
+    return `<nav class="bottomnav" aria-label="하단 메뉴">${[['home','홈'],['history','운동 기록'],['weight','체중'],['settings','설정']].map(([id,text])=>`<button class="tab ${active===id?'active':''}" data-action="nav" data-value="${id}" aria-label="${text}" ${active===id?'aria-current="page"':''}>${icon(['history','weight'].includes(id)?'chart':id)}<span>${text}</span></button>`).join('')}</nav>`;
   }
   function renderHome() {
     const now = new Date();
@@ -275,23 +280,72 @@
       <div class="note"><div class="note-icon">✦</div><div><strong>오늘의 코치 노트</strong><p>마지막 2~3회가 어렵게 느껴지는 강도가 목표예요. 통증이 발생하면 동작을 중단하고 강도를 조정하세요.</p></div></div>
     </div>${navigation('home')}`;
   }
-  function chartHtml() {
-    const records = [...data.weights].filter(x=>typeof x.weight==='number' && Number.isFinite(x.weight)).sort((a,b)=>a.date.localeCompare(b.date)).slice(-12);
+  function validRecordDate(value){
+    if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;
+    const parsed=new Date(value+'T12:00:00');
+    return !Number.isNaN(parsed.valueOf())&&dateStr(parsed)===value;
+  }
+  function weightRecords(){
+    const byDate=new Map();
+    for(const item of data.weights)if(item&&validRecordDate(item.date)&&Number.isFinite(Number(item.weight))&&Number(item.weight)>=30&&Number(item.weight)<=250)byDate.set(item.date,{date:item.date,weight:Number(item.weight)});
+    return [...byDate.values()].sort((a,b)=>a.date.localeCompare(b.date));
+  }
+  function weightChanges(){
+    const records=weightRecords(),baseline=records[0]?.weight;
+    return records.map((item,index)=>({...item,delta:index?item.weight-records[index-1].weight:null,rate:index?(item.weight-records[index-1].weight)/records[index-1].weight*100:null,totalRate:(item.weight-baseline)/baseline*100}));
+  }
+  const signed=(value,digits=2)=>`${value>0?'+':''}${Math.abs(value)<.5*10**-digits?(0).toFixed(digits):value.toFixed(digits)}`;
+  function shiftMonth(value,delta){
+    const [year,month]=value.split('-').map(Number);
+    return dateStr(new Date(year,month-1+delta,1)).slice(0,7);
+  }
+  function monthControl(kind,month){
+    return `<div class="month-control"><button class="stepbtn" data-action="month-step" data-kind="${kind}" data-month="${shiftMonth(month,-1)}" aria-label="이전 달">‹</button><label><span class="sr-only">${kind==='history'?'운동 기록':'체중 기록'} 조회 월</span><input type="month" class="textinput" data-month-kind="${kind}" value="${month}" aria-label="${kind==='history'?'운동 기록':'체중 기록'} 조회 월"/></label><button class="stepbtn" data-action="month-step" data-kind="${kind}" data-month="${shiftMonth(month,1)}" aria-label="다음 달">›</button><button class="month-today" data-action="month-step" data-kind="${kind}" data-month="${dateStr().slice(0,7)}">이번 달</button></div>`;
+  }
+  function monthlyWorkouts(month){
+    return data.workouts.filter(item=>item&&!Number.isNaN(new Date(item.completedAt).valueOf())&&dateStr(new Date(item.completedAt)).startsWith(month+'-')).sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt));
+  }
+  function chartHtml(records=weightRecords()) {
     if(records.length<2) return `<div class="empty">체중을 두 번 이상 기록하면 추이 그래프가 나타납니다.</div>`;
     const values=records.map(r=>r.weight), min=Math.floor(Math.min(...values)-1),max=Math.ceil(Math.max(...values)+1), span=(max-min)||1;
-    const xy=values.map((v,i)=>[22+i* (316/(values.length-1)), 125-(v-min)/span*99]);
+    const dates=records.map(r=>new Date(r.date+'T12:00:00').valueOf()),daysSpan=dates.at(-1)-dates[0]||1;
+    const xy=values.map((v,i)=>[22+(dates[i]-dates[0])/daysSpan*316, 125-(v-min)/span*99]);
     const points=xy.map(([x,y])=>`${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
     return `<svg class="chart" viewBox="0 0 360 155" role="img" aria-label="최근 체중 변화 그래프"><path d="M22 26H338 M22 75H338 M22 125H338" stroke="#334450" stroke-dasharray="3,5" fill="none"/><polyline points="${points}" fill="none" stroke="#ccf374" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>${xy.map(([x,y])=>`<circle cx="${x}" cy="${y}" r="4" fill="#ccf374"/>`).join('')}<text x="22" y="149" fill="#8b9eaa" font-size="11">${humanDate(records[0].date)}</text><text x="338" y="149" fill="#8b9eaa" font-size="11" text-anchor="end">${humanDate(records.at(-1).date)}</text><text x="338" y="19" fill="#8b9eaa" font-size="11" text-anchor="end">${max}kg</text></svg>`;
   }
   function renderHistory() {
-    const sorted = [...data.workouts].sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt));
-    return `<div class="shell">${header()}<div class="pageintro"><div class="eyebrow">YOUR PROGRESS</div><h1>쌓이는 운동 기록.</h1><p class="subheading">작은 반복이 몸을 바꿉니다.</p></div>
-      <div class="card formbox"><div class="row-between"><div><div class="metric-label">현재 체중</div><div class="metric-value">${latestWeight()}<small>kg</small></div></div><span class="pill">목표 ${goalWeight()}kg</span></div>
-      ${chartHtml()}<form id="weight-form"><label class="formlabel" for="weight">오늘 체중 추가 / 수정</label><div class="field"><input id="weight" name="weight" class="textinput" inputmode="decimal" type="number" min="30" max="250" step="0.1" value="${latestWeight()}" required aria-label="체중 킬로그램"/><button class="btn btn-primary" type="submit">저장</button></div></form></div>
-      <div class="sectionline"><div class="sectiontitle">운동 히스토리</div><div class="smallhint">총 ${sorted.length}회 완료</div></div>
-      <div class="card recordcard">${sorted.length ? sorted.slice(0,30).map(item=>`<div class="recorditem"><div><div class="date">${new Date(item.completedAt).toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'short'})}</div><div class="main">${escapeHtml(PLANS[item.plan]?.label||'운동 루틴')}</div></div><div class="mins">${Math.round(item.minutes)}분 · 완료</div></div>`).join(''):'<div class="empty">첫 운동을 완료하면 여기에 기록됩니다.</div>'}</div>
-      <p class="fineprint">기록은 이 기기의 이 웹앱 저장 공간에만 보관됩니다. 브라우저 데이터 삭제 또는 앱 삭제로 기록이 사라질 수 있으니 설정에서 백업하세요.</p>
-      </div>${navigation('history')}`;
+    const records=monthlyWorkouts(historyMonth),[year,month]=historyMonth.split('-').map(Number);
+    const byDay=new Map();
+    for(const item of records){const day=dateStr(new Date(item.completedAt));byDay.set(day,[...(byDay.get(day)||[]),item]);}
+    const totalMinutes=records.reduce((sum,item)=>sum+(Number(item.minutes)||0),0);
+    const offset=new Date(year,month-1,1).getDay(),days=new Date(year,month,0).getDate();
+    const cells=Array.from({length:offset},()=>'<span class="calendar-blank" aria-hidden="true"></span>');
+    for(let number=1;number<=days;number++){
+      const day=`${historyMonth}-${String(number).padStart(2,'0')}`,count=byDay.get(day)?.length||0;
+      cells.push(`<button class="calendar-day ${count?'done':''} ${day===dateStr()?'today':''} ${day===historyDay?'selected':''}" data-action="history-day" data-date="${day}" aria-pressed="${day===historyDay}" aria-label="${month}월 ${number}일, 운동 ${count}회"><span>${number}</span><small>${count?`${count}회`:'·'}</small></button>`);
+    }
+    const shown=historyDay?(byDay.get(historyDay)||[]):records;
+    return `<div class="shell">${header()}<div class="pageintro"><div class="eyebrow">MONTHLY TRAINING</div><h1>월별 운동 기록.</h1><p class="subheading">운동한 날과 완료한 루틴을 한눈에 확인하세요.</p></div>
+      ${monthControl('history',historyMonth)}
+      <div class="monthly-metrics"><div class="card metric"><div class="metric-label">완료한 운동</div><div class="metric-value">${records.length}<small>회</small></div></div><div class="card metric"><div class="metric-label">운동한 날</div><div class="metric-value">${byDay.size}<small>일</small></div></div><div class="card metric"><div class="metric-label">총 운동 시간</div><div class="metric-value">${Math.round(totalMinutes)}<small>분</small></div></div></div>
+      <section class="card calendar" aria-label="${year}년 ${month}월 운동 달력"><div class="calendar-grid calendar-weekdays">${DAY_NAMES.map(name=>`<span>${name}</span>`).join('')}</div><div class="calendar-grid">${cells.join('')}</div><p class="fineprint">날짜를 누르면 그날의 운동 기록을 볼 수 있습니다.</p></section>
+      <div class="sectionline"><div class="sectiontitle">${historyDay?humanDate(historyDay):`${month}월 전체`} 기록</div>${historyDay?'<button class="month-today" data-action="history-all">전체 보기</button>':`<div class="smallhint">${year}년</div>`}</div>
+      <div class="card recordcard">${shown.length?shown.map(item=>`<div class="recorditem"><div><div class="date">${humanDate(dateStr(new Date(item.completedAt)))}</div><div class="main">${escapeHtml(PLANS[item.plan]?.label||'운동 루틴')}</div>${Number.isFinite(item.totalSteps)&&item.totalSteps>0?`<div class="smallhint">진행 ${Number(item.stepsCompleted)||0} / ${item.totalSteps}단계</div>`:''}</div><div class="mins">${Math.round(Number(item.minutes)||0)}분 · 완료</div></div>`).join(''):`<div class="empty">${historyDay?'이 날짜에는':'이 달에는'} 완료한 운동이 없습니다.</div>`}</div>
+      <p class="fineprint">완료한 루틴을 기준으로 표시합니다. 진행 중인 운동은 완료 후 기록됩니다. 기록은 이 기기에 저장되며 설정에서 백업할 수 있습니다.</p></div>${navigation('history')}`;
+  }
+  function renderWeight(){
+    const changes=weightChanges(),records=changes.filter(item=>item.date.startsWith(weightMonth+'-'));
+    const latest=changes.at(-1),baseline=changes[0],monthChange=records.length>1?records.at(-1).weight-records[0].weight:null;
+    return `<div class="shell">${header()}<div class="pageintro"><div class="eyebrow">WEIGHT JOURNAL</div><h1>날짜별 체중 변화.</h1><p class="subheading">측정한 날짜에 체중을 기록하고 변화를 확인하세요.</p></div>
+      ${weightMessage?`<div class="profile-applied" role="status">${escapeHtml(weightMessage)}</div>`:''}
+      <div class="card formbox"><div class="row-between"><div><div class="metric-label">최근 체중${latest?' · '+humanDate(latest.date):''}</div><div class="metric-value">${latest?.weight??latestWeight()}<small>kg</small></div></div><span class="pill">목표 ${goalWeight()}kg</span></div>
+      <form id="weight-form" class="weight-form"><label class="profile-field"><span>측정 날짜</span><input class="textinput" name="date" type="date" value="${dateStr()}" max="${dateStr()}" required/></label><label class="profile-field"><span>체중 (kg)</span><input name="weight" class="textinput" inputmode="decimal" type="number" min="30" max="250" step="0.1" value="${latest?.weight??latestWeight()}" required/></label><button class="btn btn-primary btn-full" type="submit">체중 저장</button></form><p class="fineprint">같은 날짜에 저장하면 해당 날짜의 체중을 수정합니다.</p></div>
+      ${monthControl('weight',weightMonth)}
+      <div class="metrics"><div class="card metric"><div class="metric-label">이 달 첫 측정 대비</div><div class="metric-value">${monthChange===null?'—':signed(monthChange,1)}<small>kg</small></div></div><div class="card metric"><div class="metric-label">최초 기록 대비 · 최근 체중</div><div class="metric-value">${latest?signed(latest.totalRate):'—'}<small>%</small></div></div></div>
+      <div class="card formbox">${chartHtml(records)}</div>
+      <div class="sectionline"><div class="sectiontitle">날짜별 변동률</div><div class="smallhint">${records.length}개 기록</div></div>
+      <div class="card weight-table-wrap"><table class="weight-table"><thead><tr><th scope="col">날짜</th><th scope="col">체중</th><th scope="col">직전 측정 대비</th><th scope="col">최초 대비</th></tr></thead><tbody>${records.length?[...records].reverse().map(item=>`<tr><th scope="row">${item.date}</th><td>${item.weight.toFixed(1)}kg</td><td>${item.rate===null?'—':`${signed(item.rate)}%<small>${signed(item.delta,1)}kg</small>`}</td><td>${signed(item.totalRate)}%</td></tr>`).join(''):'<tr><td colspan="4" class="empty">이 달에는 체중 기록이 없습니다.</td></tr>'}</tbody></table></div>
+      <p class="fineprint">직전 측정 대비 = (현재 체중 − 이전 측정 체중) ÷ 이전 측정 체중 × 100. 측정하지 않은 날짜는 건너뜁니다.${baseline?` 최초 기준은 ${baseline.date}의 ${baseline.weight.toFixed(1)}kg입니다.`:''} +는 증가, −는 감소를 뜻합니다.</p></div>${navigation('weight')}`;
   }
   function settingRow({name,desc,action,key,min,max,step=1,value,unit=''}) {
     return `<div class="settings-row"><div><strong>${name}</strong><p>${desc}</p></div><div class="numberstep"><button class="stepbtn" data-action="setting-step" data-key="${key}" data-delta="-${step}" ${value<=min?'disabled':''}>−</button><span class="stepvalue">${value}${unit}</span><button class="stepbtn" data-action="setting-step" data-key="${key}" data-delta="${step}" ${value>=max?'disabled':''}>+</button></div></div>`;
@@ -302,7 +356,7 @@
     <div class="sectionline"><div class="sectiontitle">알림</div></div><div class="card formbox"><div class="settings-row"><div><strong>효과음</strong><p>타이머 종료와 단계 전환 시 소리 재생 시도</p></div><input class="toggle" type="checkbox" data-setting="sound" aria-label="효과음" ${s.sound?'checked':''}/></div><div class="settings-row"><div><strong>한국어 음성 안내</strong><p>지원되는 브라우저에서 다음 동작 읽기</p></div><input class="toggle" type="checkbox" data-setting="speech" aria-label="음성 안내" ${s.speech?'checked':''}/></div></div>
     <p class="setting-help">아이폰의 절전·화면 잠금·브라우저 정책에 따라 소리나 자동 안내가 재생되지 않을 수 있습니다. 운동 중에는 앱을 화면에 유지하세요. 아이폰 PWA에서는 진동이 지원되지 않을 수 있어 기능에서 제외했습니다.</p>
     <div class="sectionline"><div class="sectiontitle">내 신체정보</div></div><div class="card formbox"><div class="settings-row"><div><strong>${escapeHtml(data.profile?.name||'')} ${data.profile?.gender?'· '+escapeHtml(data.profile.gender):''}</strong><p>만 ${profileAge(data.profile?.birthdate)}세 · 키 ${data.profile?.height}cm · 목표 체중 ${goalWeight()}kg</p></div><button class="btn btn-outline" data-action="go-profile">수정</button></div></div>
-        <div class="sectionline"><div class="sectiontitle">내 데이터</div></div><div class="card formbox"><button class="btn btn-outline btn-full" data-action="export">↓ 운동 기록 JSON 백업</button><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="import">↑ 백업 복원</button><input type="file" accept="application/json,.json" id="backup-file" class="hidden"/><div style="height:10px"></div><button class="btn btn-ghost btn-full" data-action="reset-confirm">모든 기록 초기화</button></div>
+        <div class="sectionline"><div class="sectiontitle">내 데이터</div></div><div class="card formbox"><button class="btn btn-outline btn-full" data-action="export">↓ 운동 기록 JSON 백업</button><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="import">↑ 백업 복원</button><input type="file" accept="application/json,.json" id="backup-file" class="hidden"/><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="records-reset-confirm">기록·설정 초기화</button><p class="fineprint">프로필·신체정보는 유지하고 운동·체중 기록과 운동 설정을 초기화합니다.</p><button class="btn btn-ghost btn-full" data-action="reset-confirm">프로필 포함 전체 초기화</button><p class="fineprint">프로필을 포함한 이 기기의 모든 저장 정보를 삭제합니다.</p></div>
     ${localStorage.getItem(LEGACY_KEY)?'<div class="card formbox"><strong>이전 버전 기록 가져오기</strong><p class="setting-help">이 기기에 v1.0 기록이 남아 있다면 가져올 수 있습니다. 현재 기록을 대체하므로 먼저 JSON 백업하세요.</p><button class="btn btn-outline btn-full" data-action="migrate-legacy-confirm">v1.0 기록 가져오기</button></div>':''}
     <p class="fineprint">칼리코치 v1.4 · 로그인 없이 이 기기의 프로필을 자동으로 불러옵니다. 기록은 다른 아이폰과 동기화되지 않습니다. 공용 기기에서 사용하지 마세요.</p></div>${navigation('settings')}`;
   }
@@ -323,7 +377,7 @@
       ${rest ? `<div class="reststage"><div class="eyebrow">RECOVER & RESET</div><h1 class="exercise-title">잠깐 숨 고르기</h1><div class="restbubble" style="margin-top:36px"><div class="restnumber" data-countdown>${displayTime}</div><div class="restsmall">초 후 다음 운동</div></div><div class="restnext">다음 동작<strong>${escapeHtml(e.title)}</strong></div><button type="button" class="guide-rest-button" data-action="details" data-id="${step.id}">다음 동작 미리 배우기 ›</button></div><div class="action-area"><button class="btn btn-primary btn-full" data-action="skip-rest">바로 다음 운동 →</button>${controls}</div>`:
       `<main class="workout-stage"><div class="stage-line"><span class="phasepill">${PHASES[step.phase]}</span><span class="stage-count">${active.index+1} / ${steps.length}</span></div>
         <h1 class="exercise-title">${escapeHtml(e.title)}</h1><p class="exercise-subtitle">${step.phase==='main'?`${step.round} / ${active.rounds} 라운드 · `:''}${escapeHtml(e.range || (e.type==='timed'?'시간 운동':'정확한 자세로 수행'))}</p>
-        <div class="exercise-figure">${mediaHtml(step.id)}<div class="figure-number">${videoSource(step.id)?'실제 동작 시연':'간략 동작 개념도'} · ${step.phase.toUpperCase()}</div></div>
+        <div class="exercise-figure">${mediaHtml(step.id)}<div class="figure-number">${videoSource(step.id)?escapeHtml(mediaLabel(step.id)):'간략 동작 개념도'} · ${step.phase.toUpperCase()}</div></div>
         <div class="targetcenter"><div><span class="target-value" ${e.type==='timed'?'data-countdown':''}>${e.type==='timed'?displayTime:getAmount(step.id)}</span><span class="target-unit">${e.unit}</span></div><div class="target-help">${e.type==='timed'?(paused?'일시정지됨':'시간이 끝나면 자동으로 넘어갑니다'):(e.each?'왼쪽·오른쪽 각각 수행하세요':'완료 후 아래 버튼을 누르세요')}</div>
           ${e.type==='reps'?`<div class="target-adjust"><button class="miniadjust" data-action="rep-minus" aria-label="횟수 줄이기">−</button><small>오늘의 목표 횟수 조절</small><button class="miniadjust" data-action="rep-plus" aria-label="횟수 늘리기">+</button></div>`:''}</div>
         <div class="tipbox"><span>✦</span><p>${escapeHtml(e.cue)} <button data-action="details" data-id="${step.id}" style="background:none;border:0;color:var(--accent);padding:0 0 0 3px;font-size:12px;font-weight:850">동작 배우기 ›</button></p></div>
@@ -340,24 +394,27 @@
       const id=detailExerciseId, detail=exercise[id], guide=Guides[id], ref=guide?.reference;
       return `<div class="modal-backdrop"><section class="modal guide-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(detail.title)} 동작 배우기">
         <div class="guide-header"><h2>${escapeHtml(detail.title)} · 동작 배우기</h2><button class="guide-close" data-action="close-modal" aria-label="닫기">×</button></div>
-        <p class="guide-media-label">${videoSource(id)?'실제 사람의 운동 동작 시연 · 음소거 자동 반복':'개념 애니메이션 · 아래에서 실제 영상 후보를 확인하세요'}</p>${mediaHtml(id)}
+        <p class="guide-media-label">${videoSource(id)?`${escapeHtml(mediaLabel(id))} · 음소거 자동 반복`:'개념 애니메이션 · 아래에서 실제 영상 후보를 확인하세요'}</p>${mediaHtml(id)}
+        ${VideoCatalog[id]?.display_note?`<p class="guide-reference-note">${escapeHtml(VideoCatalog[id].display_note)}</p>`:''}
         ${videoSource(id)?`<div class="video-controls"><button type="button" data-action="video-speed" data-speed="0.5">0.5배속</button><button type="button" data-action="video-speed" data-speed="1">1배속</button><span>영상을 눌러 일시정지/재생</span></div>`:''}
+        ${videoSource(id)?`<a class="guide-reference" href="${escapeHtml(VideoCatalog[id].url)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(VideoCatalog[id].provider||'Pexels')} 원본 영상 <small>${escapeHtml(VideoCatalog[id].creator)} · ${escapeHtml(VideoCatalog[id].license)}</small></a>${VideoCatalog[id].license_url?`<a class="guide-reference" href="${escapeHtml(VideoCatalog[id].license_url)}" target="_blank" rel="noopener noreferrer">영상 이용 조건</a>`:''}`:''}
         <div class="guide-steps">
           ${[['01','시작 자세',guide?.start||detail.cue],['02','동작 수행',guide?.move||detail.cue],['03','자세 확인',guide?.check||detail.tips[0]]].map(([n,title,desc])=>`<div class="guide-step"><span class="guide-step-n">${n}</span><div><b>${title}</b><p>${escapeHtml(desc||'')}</p></div></div>`).join('')}
         </div>
         ${!videoSource(id) && SourceCandidates[id] ? `<a class="guide-reference" href="${escapeHtml(SourceCandidates[id].url)}" target="_blank" rel="noopener noreferrer">↗ 실제 사람이 시연하는 영상 후보 보기 <small>Pexels · 운동 일치 여부는 직접 확인해야 함</small></a>` : ''}
-        ${ref ? `<a class="guide-reference" href="${escapeHtml(ref.url)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(ref.label)} 열기 <small>외부 교육 페이지 · 인터넷 필요</small></a>` : `<div class="guide-reference-note">이 동작의 검증된 실제 시연 링크는 아직 준비 중입니다. 설명을 익히고 어렵다면 건너뛰거나 더 쉬운 동작을 선택하세요.</div>`}
+        ${ref ? `<a class="guide-reference" href="${escapeHtml(ref.url)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(ref.label)} 열기 <small>외부 교육 페이지 · 인터넷 필요</small></a>` : videoSource(id) ? '' : `<div class="guide-reference-note">이 동작의 검증된 실제 시연 링크는 아직 준비 중입니다. 설명을 익히고 어렵다면 건너뛰거나 더 쉬운 동작을 선택하세요.</div>`}
         <div class="alert">통증이 발생하면 동작을 중단하고 강도를 조정하세요.</div>
         <button class="btn btn-primary btn-full" data-action="close-modal">확인 · 운동으로 돌아가기</button>
       </section></div>`;
     }
     if(modal==='quit')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>운동을 종료할까요?</h2><p>지금 종료하면 이번 회차는 완료 기록에 포함되지 않습니다. 앱을 닫아도 진행 상태는 남아 있습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">계속 운동</button><button class="btn btn-primary" data-action="quit">종료</button></div></section></div>`;
-    if(modal==='reset')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>운동 기록을 초기화할까요?</h2><p>이 기기의 운동·체중 기록과 운동 설정이 초기화됩니다. 신체정보는 유지됩니다. 먼저 백업하는 것이 좋습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="reset">초기화</button></div></section></div>`;
+    if(modal==='records-reset')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="records-reset-title"><h2 id="records-reset-title">기록과 운동 설정을 초기화할까요?</h2><p>프로필·신체정보는 유지합니다. 운동·체중 기록, 운동 설정, 난이도 진행도와 진행 중인 운동을 초기화합니다. 현재 프로필 체중은 오늘의 시작 기록으로 남깁니다.</p><p class="alert">기존 기록은 되돌릴 수 없습니다. 필요한 경우 취소 후 JSON으로 백업하세요.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-danger" data-action="records-reset">확인 · 기록 초기화</button></div></section></div>`;
+    if(modal==='reset')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="reset-title"><h2 id="reset-title">모든 정보를 완전히 초기화할까요?</h2><p>이 기기의 프로필·신체정보·운동 기록·체중 기록·설정·진행 중인 운동과 이전 버전 저장 정보를 모두 삭제합니다. 삭제 후에는 처음부터 프로필을 입력해야 합니다.</p><p class="alert">삭제한 정보는 되돌릴 수 없습니다. 필요한 기록은 취소 후 설정에서 JSON으로 백업하세요.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-danger" data-action="reset">확인 · 전체 초기화</button></div></section></div>`;
     if(modal==='legacy')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>v1.0 기록 가져오기</h2><p>현재 운동·체중 기록을 이전 버전의 데이터로 교체합니다. 먼저 백업하세요. 이전 원본은 그대로 남습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="migrate-legacy">가져오기</button></div></section></div>`;
     if(modal==='import')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>백업을 복원할까요?</h2><p>현재 기기의 기록을 선택한 백업 파일로 덮어씁니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="import-confirm">복원</button></div></section></div>`;
     return '';
   }
-  function render(){const html=view==='profile'?renderProfile():view==='workout'?renderWorkout():view==='finish'?renderFinish():view==='history'?renderHistory():view==='settings'?renderSettings():renderHome();root.innerHTML=html+modalHtml();document.title=`칼리코치 · ${view==='profile'?'신체정보':view==='workout'?'운동 중':'내 운동 앱'}`;}
+  function render(){const html=view==='profile'?renderProfile():view==='workout'?renderWorkout():view==='finish'?renderFinish():view==='history'?renderHistory():view==='weight'?renderWeight():view==='settings'?renderSettings():renderHome();root.innerHTML=html+modalHtml();document.title=`칼리코치 · ${view==='profile'?'신체정보':view==='workout'?'운동 중':view==='history'?'월별 운동 기록':view==='weight'?'체중 기록':'내 운동 앱'}`;}
   function ensureAudio(){if(!data.settings.sound)return;try {const Ctx = window.AudioContext||window.webkitAudioContext;if(Ctx){audioContext=audioContext||new Ctx();if(audioContext.state==='suspended')audioContext.resume().catch(()=>{});}}catch{}}
   function beep(){if(!data.settings.sound || !audioContext || audioContext.state!=='running')return;try{const oscillator=audioContext.createOscillator(),volume=audioContext.createGain();oscillator.type='sine';oscillator.frequency.value=780;volume.gain.setValueAtTime(.0001,audioContext.currentTime);volume.gain.exponentialRampToValueAtTime(.085,audioContext.currentTime+.03);volume.gain.exponentialRampToValueAtTime(.0001,audioContext.currentTime+.22);oscillator.connect(volume);volume.connect(audioContext.destination);oscillator.start();oscillator.stop(audioContext.currentTime+.23);}catch{}}
   function speak(message) {
@@ -437,7 +494,7 @@
     if(!importCandidate)return;
     const item=importCandidate.data,def=DEFAULTS();
     const safeWeights=item.weights.filter(w=>w&&/^\d{4}-\d{2}-\d{2}$/.test(w.date)&&Number.isFinite(Number(w.weight))&&Number(w.weight)>=30&&Number(w.weight)<=250).map(w=>({date:w.date,weight:Number(w.weight)}));
-    const safeWorkouts=item.workouts.filter(w=>w&&['A','B'].includes(w.plan)&&!Number.isNaN(new Date(w.completedAt).valueOf())).map(w=>({plan:w.plan,completedAt:w.completedAt,minutes:num(w.minutes,1,999),stepsCompleted:num(w.stepsCompleted,0,500)}));
+    const safeWorkouts=item.workouts.filter(w=>w&&['A','B','C'].includes(w.plan)&&!Number.isNaN(new Date(w.completedAt).valueOf())).map(w=>({plan:w.plan,completedAt:w.completedAt,minutes:num(w.minutes,1,999),stepsCompleted:num(w.stepsCompleted,0,500)}));
     const importedProfile=[3,4].includes(importCandidate.version) ? item.profile : importCandidate.version===2 ? {...(item.profile||{}),name:OLD_USERS[importCandidate.userId]?.name||data.profile?.name,gender:OLD_USERS[importCandidate.userId]?.gender||data.profile?.gender||''} : data.profile;
     // 버전 1에서는 프로필을 덮어쓰지 않으며, 현재 사용자 프로필을 유지합니다.
     const validProfile=savedProfileValid(importedProfile)?importedProfile:data.profile;
@@ -453,6 +510,52 @@
       importCandidate={app:'calicoach',version:1,data:old};restore();
     }catch(err){modal=null;render();alert(`이전 기록을 가져올 수 없습니다: ${err.message}`);}
   }
+  function saveWeight(recordDate,value){
+    const weight=Number(value);
+    if(!validRecordDate(recordDate)||recordDate>dateStr()){
+      alert('오늘까지의 올바른 측정 날짜를 선택해주세요.');return false;
+    }
+    if(value===''||!Number.isFinite(weight)||weight<30||weight>250){
+      alert('30~250kg 사이의 올바른 체중을 입력해주세요.');return false;
+    }
+    const previous=JSON.parse(JSON.stringify(data));
+    const existed=data.weights.some(item=>item.date===recordDate);
+    data.weights=[...weightRecords().filter(item=>item.date!==recordDate),{date:recordDate,weight:Math.round(weight*10)/10}].sort((a,b)=>a.date.localeCompare(b.date));
+    if(data.profile)data.profile.weight=latestWeight();
+    if(!save()){data=previous;alert('체중을 저장하지 못했습니다. 기기 저장 공간을 확인해주세요.');return false;}
+    weightMonth=recordDate.slice(0,7);weightMessage=`${humanDate(recordDate)} 체중을 ${existed?'수정':'저장'}했습니다.`;render();return true;
+  }
+  function resetRecords(){
+    if(modal!=='records-reset')return false;
+    const previous=data,profile=data.profile;
+    data=DEFAULTS();data.profile=profile;
+    data.settings.targetWeight=Number(profile?.targetWeight||0);
+    data.settings.rounds=recommendedRounds(profile);
+    data.weights=profile?[{date:dateStr(),weight:Number(profile.weight)}]:[];
+    if(!save()){data=previous;alert('기록을 초기화하지 못했습니다. 기기 저장 공간을 확인해주세요.');return false;}
+    releaseWake();try{window.speechSynthesis?.cancel();}catch{}
+    lastFinished=null;modal=null;importCandidate=null;detailExerciseId=null;
+    profileAppliedMessage=false;weightMessage='';historyDay=null;
+    historyMonth=weightMonth=dateStr().slice(0,7);latestAnnouncement='';view='home';
+    window.scrollTo(0,0);render();return true;
+  }
+  function resetAllData(){
+    if(modal!=='reset')return false;
+    const empty=DEFAULTS();
+    try{
+      // A profile:null marker prevents old-version profiles from migrating back after reset.
+      localStorage.setItem(DEVICE_KEY,JSON.stringify(empty));
+      for(const storage of [localStorage,sessionStorage]){
+        const keys=Array.from({length:storage.length},(_,index)=>storage.key(index));
+        for(const key of keys)if(key?.startsWith('calicoach.')&&!(storage===localStorage&&key===DEVICE_KEY))storage.removeItem(key);
+      }
+    }catch(err){alert('저장 정보 초기화를 완료하지 못했습니다. 브라우저 저장 공간 접근을 확인하고 다시 시도해주세요.');return false;}
+    releaseWake();try{window.speechSynthesis?.cancel();}catch{}
+    data=empty;lastFinished=null;modal=null;importCandidate=null;detailExerciseId=null;
+    profileAppliedMessage=false;weightMessage='';historyDay=null;
+    historyMonth=weightMonth=dateStr().slice(0,7);latestAnnouncement='';view='profile';
+    window.scrollTo(0,0);render();return true;
+  }
   root.addEventListener('click',event => {
     if(event.target?.tagName==='VIDEO' && event.target.classList?.contains('exercise-real-video')){
       const video=event.target;
@@ -467,12 +570,21 @@
       return;
     }
     if(action==='close-modal'){modal=null;render();return;}
-    if(modal && !['quit','reset','import-confirm','migrate-legacy'].includes(action))return;
+    if(modal && !['quit','reset','records-reset','import-confirm','migrate-legacy'].includes(action))return;
     if(action==='go-profile'){profileAppliedMessage=false;view='profile';window.scrollTo(0,0);render();return;}
     if(action==='profile-back'){view='settings';render();return;}
     if(action==='migrate-legacy-confirm'){modal='legacy';render();return;}
     if(action==='migrate-legacy'){migrateLegacy();return;}
     if(action==='nav'){profileAppliedMessage=false;view=button.dataset.value;window.scrollTo(0,0);render();return;}
+    if(action==='month-step'){
+      const {kind,month}=button.dataset;
+      if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))return;
+      if(kind==='history'){historyMonth=month;historyDay=null;}
+      else if(kind==='weight'){weightMonth=month;weightMessage='';}
+      render();return;
+    }
+    if(action==='history-day'){if(validRecordDate(button.dataset.date)){historyDay=button.dataset.date;render();}return;}
+    if(action==='history-all'){historyDay=null;render();return;}
     if(action==='start'||action==='resume'){ensureAudio();startSession();return;}
     if(action==='done'){if(data.active?.mode==='work'&&currentStep()?.phase==='main'){data.active.feedback=data.active.feedback||{};data.active.feedback[stepKey(currentStep())]='ok';}doneStep();return;}
     if(action==='rate-easy'||action==='rate-hard'){if(data.active?.mode!=='work'||currentStep()?.phase!=='main')return;data.active.feedback=data.active.feedback||{};data.active.feedback[stepKey(currentStep())]=action==='rate-easy'?'easy':'hard';doneStep();return;}
@@ -501,30 +613,25 @@
     if(action==='export'){downloadBackup();return;}
     if(action==='import'){$('#backup-file')?.click();return;}
     if(action==='import-confirm'){restore();return;}
+    if(action==='records-reset-confirm'){modal='records-reset';render();return;}
+    if(action==='records-reset'){resetRecords();return;}
     if(action==='reset-confirm'){modal='reset';render();return;}
     if(action==='reset'){
-      const oldProfile=data.profile;
-      data=DEFAULTS();data.profile=oldProfile;
-      data.settings.targetWeight=Number(oldProfile?.targetWeight||0);
-      data.settings.rounds=recommendedRounds(oldProfile);
-      data.weights=oldProfile?[{date:dateStr(),weight:Number(oldProfile.weight)}]:[];
-      lastFinished=null;modal=null;view='home';save();render();return;
+      resetAllData();return;
     }
   });
   root.addEventListener('error',event=>{
-    if(event.target?.matches?.('video.exercise-real-video')){
+    if(event.target?.matches?.('video.exercise-real-video, video.exercise-preview-video')){
       const video=event.target;
       const id=video.getAttribute('data-id');
-      if(id && exercise[id])video.outerHTML=`<img src="${mediaSrc(id)}" class="exercise-motion-gif" alt="${escapeHtml(exercise[id].title)} 영상 재생 불가, 개념 애니메이션" />`;
+      if(id && exercise[id])video.outerHTML=`<img src="${mediaSrc(id)}" class="${video.classList.contains('exercise-preview-video')?'exercise-preview-gif':'exercise-motion-gif'}" alt="${escapeHtml(exercise[id].title)} 영상 재생 불가, 개념 애니메이션" />`;
     }
   },true);
   root.addEventListener('submit',event => {
     const form=event.target;if(!['profile-form','weight-form','target-form'].includes(form.id))return;event.preventDefault();
     if(form.id==='profile-form'){saveProfile(form);return;}
     if(form.id==='weight-form'){
-      const weight=Number($('#weight')?.value);
-      if(!Number.isFinite(weight)||weight<30||weight>250){alert('30~250kg 사이의 올바른 체중을 입력해주세요.');return;}
-      data.weights=data.weights.filter(w=>w.date!==dateStr());data.weights.push({date:dateStr(),weight:Math.round(weight*10)/10});if(data.profile)data.profile.weight=Math.round(weight*10)/10;save();render();return;
+      const fields=new FormData(form);saveWeight(String(fields.get('date')||''),fields.get('weight'));return;
     }
     const target=Number($('#target')?.value);
     if(!Number.isFinite(target)||target<30||target>250){alert('목표 체중은 30~250kg 범위에서 입력해주세요.');return;}
@@ -532,6 +639,11 @@
   });
   root.addEventListener('change',event => {
     const target=event.target;
+    if(target.dataset?.monthKind&&/^\d{4}-(0[1-9]|1[0-2])$/.test(target.value)){
+      if(target.dataset.monthKind==='history'){historyMonth=target.value;historyDay=null;}
+      if(target.dataset.monthKind==='weight'){weightMonth=target.value;weightMessage='';}
+      render();return;
+    }
     if(target.matches('[data-setting]')) {data.settings[target.dataset.setting]=target.checked;save();}
     if(target.id==='backup-file')handleImport(target);
   });
