@@ -1,7 +1,40 @@
-/* Calisthenics Coach PWA v1.0 — 외부 라이브러리/계정/서버 사용 없음 */
+/* Calisthenics Coach PWA v1.1 — 3인 로컬 프로필 / 서버 없는 사용자 선택 */
 (() => {
   'use strict';
-  const STORAGE_KEY = 'calicoach.pwa.v1';
+  const LEGACY_KEY = 'calicoach.pwa.v1';
+  const STORAGE_PREFIX = 'calicoach.pwa.v2.user.';
+  const AUTO_SESSION_KEY = 'calicoach.pwa.v2.autoUser';
+  const TAB_SESSION_KEY = 'calicoach.pwa.v2.tabUser';
+  const USERS = Object.freeze([
+    {id:'park',name:'박무승',gender:'남성',initial:'박'},
+    {id:'lee',name:'이수희',gender:'여성',initial:'이'},
+    {id:'kwon',name:'권승용',gender:'남성',initial:'권'}
+  ]);
+  const findUser = id => USERS.find(u=>u.id===id);
+  function sessionUser(){
+    const local=localStorage.getItem(AUTO_SESSION_KEY);
+    const tab=sessionStorage.getItem(TAB_SESSION_KEY);
+    return findUser(tab)?.id || findUser(local)?.id || null;
+  }
+  let currentUserId=sessionUser();
+  const currentUser=()=>findUser(currentUserId);
+  function profileDraft(){
+    // 공개 GitHub 소스에 사용자의 생년월일·키·체중·건강정보를 넣지 않습니다.
+    // 박무승 계정은 같은 기기의 v1.0 기록이 있다면 체중과 목표만 입력을 돕습니다.
+    let weight='',targetWeight='';
+    if(currentUserId==='park'){
+      try {
+        const legacy=JSON.parse(localStorage.getItem(LEGACY_KEY));
+        if(Array.isArray(legacy?.weights)){
+          const latest=[...legacy.weights].sort((a,b)=>String(a.date).localeCompare(String(b.date))).at(-1);
+          if(latest && Number(latest.weight)>=30 && Number(latest.weight)<=250)weight=Number(latest.weight);
+        }
+        const target=Number(legacy?.settings?.targetWeight);
+        if(target>=30 && target<=250)targetWeight=target;
+      }catch{}
+    }
+    return {birthdate:'',height:'',weight,targetWeight,level:'beginner',pushups:'',days:3,minutes:30,focus:'balanced',back:false,foot:false};
+  }
   const DAY_NAMES = ['일','월','화','수','목','금','토'];
   const $ = (sel) => document.querySelector(sel);
   const root = document.getElementById('app');
@@ -13,31 +46,53 @@
   const num = (value, low, high) => Math.min(high, Math.max(low, Number(value) || low));
   const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const DEFAULTS = () => ({
-    settings: {rounds:3, rest:25, longRest:55, sound:true, speech:false, targetWeight:80, reps:{}},
-    weights:[{date:dateStr(), weight:92}], workouts:[], nextPlan:'A', active:null
+    profile:null,
+    settings: {rounds:3, rest:25, longRest:55, sound:true, speech:false, targetWeight:0, reps:{}},
+    weights:[], workouts:[], nextPlan:'A', active:null
   });
-  function load() {
+  function load(userId) {
     try {
-      const raw = JSON.parse(localStorage.getItem(STORAGE_KEY));
-      if (!raw || typeof raw !== 'object') return DEFAULTS();
-      const defaults = DEFAULTS();
+      const raw=JSON.parse(localStorage.getItem(STORAGE_PREFIX+userId));
+      if(!raw || typeof raw!=='object') return DEFAULTS();
+      const defaults=DEFAULTS();
       return {
-        settings: {...defaults.settings,...(raw.settings || {}), reps: raw.settings?.reps || {}},
-        weights:Array.isArray(raw.weights) ? raw.weights : defaults.weights,
-        workouts:Array.isArray(raw.workouts) ? raw.workouts : [],
-        nextPlan:raw.nextPlan === 'B' ? 'B' : 'A',
-        active: raw.active && typeof raw.active === 'object' ? raw.active : null
+        profile:raw.profile && typeof raw.profile==='object' ? raw.profile:null,
+        settings:{...defaults.settings,...(raw.settings||{}),reps:raw.settings?.reps||{}},
+        weights:Array.isArray(raw.weights)?raw.weights:[],
+        workouts:Array.isArray(raw.workouts)?raw.workouts:[],
+        nextPlan:raw.nextPlan==='B'?'B':'A',
+        active:raw.active && typeof raw.active==='object'?raw.active:null
       };
-    } catch { return DEFAULTS(); }
+    } catch {return DEFAULTS();}
   }
-  let data = load();
-  let view = data.active ? 'workout' : 'home';
+  let data=currentUserId?load(currentUserId):DEFAULTS();
+  let view=!currentUserId?'login':!data.profile?'profile':data.active?'workout':'home';
+  function signIn(id,remember){
+    if(!findUser(id))return;
+    releaseWake();
+    currentUserId=id;
+    localStorage.removeItem(AUTO_SESSION_KEY);
+    sessionStorage.removeItem(TAB_SESSION_KEY);
+    (remember?localStorage:sessionStorage).setItem(remember?AUTO_SESSION_KEY:TAB_SESSION_KEY,id);
+    data=load(id);lastFinished=null;modal=null;
+    view=!data.profile?'profile':data.active?'workout':'home';
+    window.scrollTo(0,0);render();
+  }
+  function signOut(){
+    releaseWake();save();
+    currentUserId=null;
+    localStorage.removeItem(AUTO_SESSION_KEY);
+    sessionStorage.removeItem(TAB_SESSION_KEY);
+    data=DEFAULTS();modal=null;lastFinished=null;view='login';
+    window.scrollTo(0,0);render();
+  }
   let modal = null;
   let lastFinished = null;
   let audioContext = null;
   let wakeLock = null;
   let latestAnnouncement = '';
   const exercise = {
+    knee: {title:'무릎 푸시업',glyph:'↗',type:'reps',amount:10,range:'8~12회',unit:'회',cue:'무릎을 바닥에 두고 어깨부터 무릎까지 곧게 유지하며 팔을 굽히세요.',tips:['손바닥은 어깨 바로 아래나 조금 바깥에 둡니다.','허리를 꺾지 않고 천천히 내려갑니다.','손목이 불편하면 높은 지지대에서 푸시업합니다.']},
     push: {title:'푸시업',glyph:'↗',type:'reps',amount:8,range:'6~12회',unit:'회',cue:'몸을 일직선으로 유지하고 허리가 꺾이지 않게 내려가세요.',tips:['손은 어깨보다 조금 넓게 짚습니다.','내려갈 때 숨을 들이쉬고 올라오며 내쉽니다.','정자세로 6회가 어렵다면 무릎 푸시업으로 바꿉니다.']},
     squat: {title:'맨몸 스쿼트',glyph:'↓',type:'reps',amount:14,range:'12~18회',unit:'회',cue:'엉덩이를 뒤로 보내고, 허리가 말리지 않는 깊이까지 앉으세요.',tips:['무릎과 발끝은 비슷한 방향을 향하게 합니다.','바닥에 발을 고르게 누르고 올라옵니다.','허리에 통증이 생기면 깊이를 줄입니다.']},
     reverse: {title:'리버스 런지',glyph:'⇣',type:'reps',amount:8,range:'좌우 각 8~10회',unit:'회씩',cue:'한 발씩 뒤로 보내며 천천히 내려갔다 올라오세요.',tips:['허리를 곧게 유지하고 상체를 과하게 숙이지 않습니다.','발바닥이 아프면 보폭과 내려가는 깊이를 줄입니다.','균형이 어렵다면 벽 가까이에서 실시합니다.'],each:true},
@@ -71,21 +126,45 @@
     };
     return `<svg viewBox="0 0 24 24" aria-hidden="true" stroke-linecap="round" stroke-linejoin="round">${icons[id]}</svg>`;
   };
-  function save() { try {localStorage.setItem(STORAGE_KEY, JSON.stringify(data));}catch(e){console.warn('저장 공간 사용 실패',e);} }
-  function buildSteps(plan, rounds) {
-    const result = [];
-    ['prep1','prep2','prep3','prep4'].forEach(id => result.push({id,phase:'warmup',round:0}));
-    for(let r=1; r<=rounds; r++) PLANS[plan].items.forEach(id => result.push({id,phase:'main',round:r}));
-    PLANS[plan].extra.forEach(id => result.push({id,phase:'bonus',round:0}));
-    ['cool1','cool2'].forEach(id => result.push({id,phase:'cooldown',round:0}));
+  function save() {
+    if(!currentUserId)return;
+    try{localStorage.setItem(STORAGE_PREFIX+currentUserId,JSON.stringify(data));}
+    catch(e){console.warn('저장 공간 사용 실패',e);}
+  }
+  function recommendedRounds(profile){return profile?.minutes===20?2:profile?.minutes===45?4:3;}
+  function planFor(plan){
+    const profile=data.profile||profileDraft();
+    const lv=profile.level||'beginner';
+    let items;
+    if(lv==='beginner')items=plan==='A' ? ['knee','squat','bridge','wraise','dead'] : ['squat','knee','bridge','traise','sideleft','sideright'];
+    else if(lv==='advanced')items=plan==='A' ? ['tempo','squat','reverse','wraise','dead'] : ['split','push','singlebridge','traise','sideleft','sideright'];
+    else items=[...PLANS[plan].items];
+    // 발바닥에 충격을 주는 동작은 없지만, 런지류를 불편하게 느끼는 경우를 고려합니다.
+    if(profile.foot && lv==='beginner')items=items.map(id=>id==='reverse'?'bridge':id==='split'?'squat':id);
+    if(profile.back && lv==='beginner')items=items.map(id=>id==='singlebridge'?'bridge':id);
+    const extra=plan==='A'?['bridge','plank']:['dead','plank'];
+    return {items,extra,label:PLANS[plan].label,subtitle:lv==='beginner'?'기초 근력 · 안정적인 자세':lv==='advanced'?'강화 근력 · 난이도 상승':PLANS[plan].subtitle};
+  }
+  function buildSteps(plan,rounds){
+    const definition=planFor(plan),result=[];
+    ['prep1','prep2','prep3','prep4'].forEach(id=>result.push({id,phase:'warmup',round:0}));
+    for(let r=1;r<=rounds;r++)definition.items.forEach(id=>result.push({id,phase:'main',round:r}));
+    definition.extra.forEach(id=>result.push({id,phase:'bonus',round:0}));
+    ['cool1','cool2'].forEach(id=>result.push({id,phase:'cooldown',round:0}));
     return result;
   }
-  const currentSteps = () => data.active ? buildSteps(data.active.plan,data.active.rounds) : [];
-  const currentStep = () => currentSteps()[data.active?.index || 0];
-  const getAmount = id => {
-    const base = exercise[id].amount;
-    const saved = Number(data.settings.reps[id]);
-    return Number.isFinite(saved) && saved>0 ? saved : base;
+  const currentSteps=()=>data.active?(Array.isArray(data.active.steps)?data.active.steps:buildSteps(data.active.plan,data.active.rounds)):[];
+  const currentStep=()=>currentSteps()[data.active?.index||0];
+  const getAmount=id=>{
+    const base=exercise[id].amount;
+    const saved=Number(data.settings.reps[id]);
+    if(Number.isFinite(saved)&&saved>0)return saved;
+    const profile=data.profile||{};
+    if(/^prep|^cool/.test(id))return base;
+    const level=profile.level||'beginner';
+    let amount=base*(level==='advanced'?1.2:level==='beginner'?0.85:1);
+    if(['push','tempo','knee'].includes(id)&&Number(profile.pushups)>0&&id!=='knee')amount=Math.min(amount,Math.max(4,Math.floor(Number(profile.pushups)*.75)));
+    return Math.max(exercise[id].type==='timed'?15:4,Math.round(amount));
   };
   function weekdayMonday(date) {
     const d = new Date(date.getFullYear(),date.getMonth(),date.getDate());
@@ -96,8 +175,65 @@
     const nextMon = new Date(monday);nextMon.setDate(nextMon.getDate()+7);
     return data.workouts.filter(w => {const t = new Date(w.completedAt); return t>=monday && t<nextMon;});
   }
-  const latestWeight = () => [...data.weights].sort((a,b)=>a.date.localeCompare(b.date)).at(-1)?.weight ?? 92;
-  function header() {return `<header class="topbar"><div class="brand">CALI<span class="brand-dot">.</span>COACH</div><div class="topright"><span class="status-dot"></span> MY TRAINING SPACE</div></header>`;}
+  const latestWeight=()=>[...data.weights].sort((a,b)=>a.date.localeCompare(b.date)).at(-1)?.weight ?? Number(data.profile?.weight||0);
+  const goalWeight=()=>Number(data.profile?.targetWeight||data.settings.targetWeight||0);
+  function profileAge(birthdate){
+    if(!birthdate)return '미입력';
+    const [year,month,day]=birthdate.split('-').map(Number),today=new Date();
+    return today.getFullYear()-year-(today.getMonth()+1<month||(today.getMonth()+1===month&&today.getDate()<day)?1:0);
+  }
+  function renderLogin(){
+    const cards=USERS.map(u=>`<button class="user-card" type="button" data-action="pick-user" data-value="${u.id}"><span class="user-avatar">${u.initial}</span><span class="user-info"><b>${u.name}</b><small>${u.gender} · 개인 운동 기록</small></span><span class="chevron">›</span></button>`).join('');
+    return `<div class="shell auth-shell"><div class="eyebrow">PRIVATE FITNESS · THREE MEMBERS</div><h1 class="auth-title">오늘의 운동,<br><em>누가 시작할까요?</em></h1><p class="subheading">이름을 선택하거나 직접 입력해 주세요.</p>
+      <div class="user-list">${cards}</div>
+      <form id="login-form" class="card formbox auth-form"><label class="formlabel" for="login-name">사용자명</label><input id="login-name" class="textinput" name="username" list="usernames" autocomplete="off" placeholder="이름 입력 (예: 박무승)" required maxlength="10"/><datalist id="usernames">${USERS.map(u=>`<option value="${u.name}"></option>`).join('')}</datalist>
+      <label class="remember-row"><input id="remember-login" type="checkbox" checked/><span>자동 로그인 유지</span></label><button type="submit" class="btn btn-primary btn-full">운동 시작하기 →</button><p id="login-error" class="form-error" role="alert" hidden></p></form>
+      <p class="fineprint">이름만으로 구분하는 개인용 계정입니다. 비밀번호 인증이 없으므로 실제 접근제어 기능은 아닙니다. 데이터는 각 기기 내에만 저장됩니다.</p></div>`;
+  }
+  function formField(label,name,type,value,extra=''){
+    return `<label class="profile-field"><span>${label}</span><input class="textinput" name="${name}" type="${type}" value="${escapeHtml(value??'')}" ${extra} required/></label>`;
+  }
+  function renderProfile(){
+    const u=currentUser(),p=data.profile||profileDraft(),first=!data.profile;
+    if(!u)return renderLogin();
+    const option=(id,value,label)=>`<option value="${value}" ${String(p[id])===String(value)?'selected':''}>${label}</option>`;
+    return `<div class="shell profile-shell">${header()}<div class="pageintro"><div class="eyebrow">PERSONAL TRAINING PROFILE</div><h1>${first?'운동 프로필 만들기':'내 신체정보 수정'}</h1><p class="subheading">입력 정보에 따라 루틴과 반복 횟수를 조정합니다.</p></div>
+      <div class="profile-identity"><div class="user-avatar">${u.initial}</div><div><b>${u.name}</b><small>${u.gender} · ${first?'첫 설정':'프로필 수정'}</small></div></div>
+      <form id="profile-form" class="card formbox profile-form">
+        <div class="form-grid">${formField('생년월일','birthdate','date',p.birthdate,'min="1930-01-01" max="'+dateStr()+'"')}${formField('키 (cm)','height','number',p.height,'min="120" max="230" step="0.1"')}${formField('현재 체중 (kg)','weight','number',data.profile?latestWeight():p.weight,'min="30" max="250" step="0.1"')}${formField('목표 체중 (kg)','targetWeight','number',p.targetWeight,'min="30" max="250" step="0.1"')}</div>
+        <label class="profile-field"><span>운동 경험</span><select class="textinput" name="level">${option('level','beginner','입문 · 최근 운동 경험 적음')}${option('level','intermediate','보통 · 기본 맨몸운동 가능')}${option('level','advanced','숙련 · 기본 동작을 쉽게 수행')}</select></label>
+        <label class="profile-field"><span>연속 정자세 푸시업 최대 횟수 (선택)</span><input class="textinput" name="pushups" type="number" min="0" max="100" step="1" placeholder="미측정이면 비워두세요" value="${escapeHtml(p.pushups??'')}"/></label>
+        <div class="form-grid"><label class="profile-field"><span>주당 운동 횟수</span><select class="textinput" name="days">${[2,3,4,5].map(n=>option('days',n,n+'회')).join('')}</select></label>
+        <label class="profile-field"><span>1회 운동 시간</span><select class="textinput" name="minutes">${[20,30,45].map(n=>option('minutes',n,n+'분')).join('')}</select></label></div>
+        <label class="profile-field"><span>우선 목표</span><select class="textinput" name="focus">${option('focus','loss','체중 감량 중심')}${option('focus','balanced','감량 + 근력 균형')}${option('focus','fitness','근력·체력 향상')}</select></label>
+        <div class="profile-field"><span>동작 조정이 필요한 부위 (선택)</span><label class="check-row"><input type="checkbox" name="back" ${p.back?'checked':''}/>허리가 자주 불편함</label><label class="check-row"><input type="checkbox" name="foot" ${p.foot?'checked':''}/>발바닥·발목이 불편함</label></div>
+        <div class="profile-hint">매트만 사용하는 맨몸운동을 기본으로 구성합니다. 강도는 운동 경험과 수행 능력으로 결정하며 성별만으로 차등 적용하지 않습니다.</div>
+        <p id="profile-error" class="form-error" role="alert" hidden></p>
+        <button class="btn btn-primary btn-full" type="submit">${first?'내 운동 루틴 만들기':'신체정보 저장하기'} →</button>
+        <button class="btn btn-ghost btn-full" type="button" data-action="${first?'logout':'profile-back'}">${first?'다른 사용자 선택':'취소'}</button>
+      </form></div>`;
+  }
+  function saveProfile(form){
+    const fd=new FormData(form),birthdate=String(fd.get('birthdate')||''),height=Number(fd.get('height')),weight=Number(fd.get('weight')),targetWeight=Number(fd.get('targetWeight'));
+    const level=String(fd.get('level')||''),days=Number(fd.get('days')),minutes=Number(fd.get('minutes')),focus=String(fd.get('focus')||'');
+    const rawPushups=String(fd.get('pushups')||'').trim(),pushups=rawPushups===''?'':Number(rawPushups);
+    const err=document.getElementById('profile-error');
+    function fail(msg){if(err){err.hidden=false;err.textContent=msg;}return false;}
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(birthdate)||birthdate>dateStr()||birthdate<'1930-01-01'||Number.isNaN(Date.parse(birthdate)))return fail('생년월일을 확인해주세요.');
+    if(!(height>=120&&height<=230&&weight>=30&&weight<=250&&targetWeight>=30&&targetWeight<=250))return fail('키 또는 체중을 입력 범위에 맞게 확인해주세요.');
+    if(!['beginner','intermediate','advanced'].includes(level)||![2,3,4,5].includes(days)||![20,30,45].includes(minutes)||!['loss','balanced','fitness'].includes(focus))return fail('운동 설정을 확인해주세요.');
+    if(pushups!==''&&(!Number.isInteger(pushups)||pushups<0||pushups>100))return fail('푸시업 횟수는 0~100회 사이로 입력해주세요.');
+    const wasNew=!data.profile,previous=data.profile,initialWeight=wasNew?weight:Number(data.profile.initialWeight||weight);
+    data.profile={birthdate,height,weight,targetWeight,initialWeight,level,pushups,days,minutes,focus,back:fd.has('back'),foot:fd.has('foot')};
+    data.settings.targetWeight=targetWeight;
+    if(wasNew){data.settings.rounds=recommendedRounds(data.profile);}
+    else if(Number(previous.minutes)!==minutes && data.settings.rounds===recommendedRounds(previous))data.settings.rounds=recommendedRounds(data.profile);
+    if(wasNew || previous.focus!==focus){data.settings.rest=focus==='fitness'?40:focus==='loss'?20:25;data.settings.longRest=focus==='fitness'?70:55;}
+    // 신체정보의 체중 수정은 당일 체중 기록에도 반영됩니다.
+    if(wasNew || Math.abs(latestWeight()-weight)>.0001){data.weights=data.weights.filter(w=>w.date!==dateStr());data.weights.push({date:dateStr(),weight});}
+    view='home';save();window.scrollTo(0,0);render();return true;
+  }
+  function header(){return `<header class="topbar"><div class="brand">CALI<span class="brand-dot">.</span>COACH</div><div class="topright"><span class="status-dot"></span> ${currentUser()?escapeHtml(currentUser().name):'MY TRAINING SPACE'}</div></header>`;}
   function navigation(active) {
     return `<nav class="bottomnav" aria-label="하단 메뉴">${[['home','홈'],['history','기록'],['settings','설정']].map(([id,text])=>`<button class="tab ${active===id?'active':''}" data-action="nav" data-value="${id}" aria-label="${text}" ${active===id?'aria-current="page"':''}>${icon(id==='history'?'chart':id)}<span>${text}</span></button>`).join('')}</nav>`;
   }
@@ -108,21 +244,24 @@
     const thisMonday = weekdayMonday(now);
     const daysDone = new Set(weekly.map(w => dateStr(new Date(w.completedAt))));
     const week = Array.from({length:7},(_,i)=>{const d=new Date(thisMonday);d.setDate(d.getDate()+i); const day=dateStr(d);return `<div class="weekbox ${daysDone.has(day)?'done':''} ${day===dateStr()?'today':''}"><strong>${['월','화','수','목','금','토','일'][i]}</strong><span class="mark">${daysDone.has(day)?'✓':d.getDate()}</span></div>`;}).join('');
-    const next = PLANS[data.nextPlan];
+    const next = planFor(data.nextPlan);
     const weight = latestWeight();
-    const progress = Math.max(0, Math.min(100, (92-weight)/(92-num(data.settings.targetWeight,50,91))*100));
+    const baseline=Number(data.profile?.initialWeight||weight);
+    const goal=goalWeight();
+    const progress=baseline!==goal?Math.max(0,Math.min(100,Math.abs((baseline-weight)/(baseline-goal))*100)):0;
     const incomplete = !!data.active;
     return `<div class="shell">${header()}
       <div class="eyebrow">YOUR PERSONAL FITNESS PLAN</div>
       <h1 class="display">오늘도 몸을<br>한 단계 더.</h1>
-      <p class="subheading">${titleDay} · 고민은 줄이고, 운동에만 집중하세요.</p>
+      <p class="subheading">${titleDay} · ${escapeHtml(currentUser().name)}님의 맞춤형 운동 코스</p>
+      <button class="mini-profile" data-action="go-profile">${data.profile?.level==='beginner'?'입문':data.profile?.level==='advanced'?'숙련':'보통'} 난이도 · 주 ${data.profile?.days}회 · ${data.profile?.minutes}분 <span>신체정보 수정 ›</span></button>
       <section class="card hero" aria-label="오늘의 운동"><div class="hero-head"><span class="pill">● ${incomplete?'진행 중인 운동':'오늘의 추천 운동'}</span><span class="softpill">A / B 자동 교대</span></div>
       <h2>${incomplete?PLANS[data.active.plan].label:next.label}</h2><p>${incomplete?'중단한 단계부터 이어서 할 수 있어요.':next.subtitle}</p>
-      <div class="hero-icons"><span>◷ 30분 내외</span><span>◈ 전신 근력</span><span>⦿ 매트만 사용</span></div>
+      <div class="hero-icons"><span>◷ ${data.profile?.minutes}분 목표</span><span>◈ ${data.profile?.focus==='loss'?'감량 중심':data.profile?.focus==='fitness'?'근력 중심':'전신 근력'}</span><span>⦿ 매트만 사용</span></div>
       <button class="btn btn-primary btn-full" data-action="${incomplete?'resume':'start'}">${incomplete?'운동 이어하기':'운동 시작하기'} &nbsp;→</button></section>
-      <div class="sectionline"><div class="sectiontitle">이번 주 진행률</div><div class="smallhint">${weekly.length} / 3회 목표</div></div>
+      <div class="sectionline"><div class="sectiontitle">이번 주 진행률</div><div class="smallhint">${weekly.length} / ${data.profile?.days||3}회 목표</div></div>
       <div class="weeklist">${week}</div>
-      <div class="metrics"><div class="card metric"><div class="metric-label">이번 주 완료</div><div class="metric-value">${weekly.length}<small>회</small></div><div class="track"><div style="width:${Math.min(100,weekly.length/3*100)}%"></div></div></div><div class="card metric"><div class="metric-label">현재 체중 · 목표 ${num(data.settings.targetWeight,50,91)}kg</div><div class="metric-value">${weight}<small>kg</small></div><div class="track"><div style="width:${progress}%"></div></div></div></div>
+      <div class="metrics"><div class="card metric"><div class="metric-label">이번 주 완료</div><div class="metric-value">${weekly.length}<small>회</small></div><div class="track"><div style="width:${Math.min(100,weekly.length/(data.profile?.days||3)*100)}%"></div></div></div><div class="card metric"><div class="metric-label">현재 체중 · 목표 ${goalWeight()}kg</div><div class="metric-value">${weight}<small>kg</small></div><div class="track"><div style="width:${progress}%"></div></div></div></div>
       <div class="note"><div class="note-icon">✦</div><div><strong>오늘의 코치 노트</strong><p>마지막 2~3회가 어렵게 느껴지는 강도가 목표예요. 허리 중립 자세를 지키고 통증이 뚜렷하게 증가하면 동작을 조정하세요.</p></div></div>
     </div>${navigation('home')}`;
   }
@@ -137,7 +276,7 @@
   function renderHistory() {
     const sorted = [...data.workouts].sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt));
     return `<div class="shell">${header()}<div class="pageintro"><div class="eyebrow">YOUR PROGRESS</div><h1>쌓이는 운동 기록.</h1><p class="subheading">작은 반복이 몸을 바꿉니다.</p></div>
-      <div class="card formbox"><div class="row-between"><div><div class="metric-label">현재 체중</div><div class="metric-value">${latestWeight()}<small>kg</small></div></div><span class="pill">목표 ${num(data.settings.targetWeight,50,91)}kg</span></div>
+      <div class="card formbox"><div class="row-between"><div><div class="metric-label">현재 체중</div><div class="metric-value">${latestWeight()}<small>kg</small></div></div><span class="pill">목표 ${goalWeight()}kg</span></div>
       ${chartHtml()}<form id="weight-form"><label class="formlabel" for="weight">오늘 체중 추가 / 수정</label><div class="field"><input id="weight" name="weight" class="textinput" inputmode="decimal" type="number" min="30" max="250" step="0.1" value="${latestWeight()}" required aria-label="체중 킬로그램"/><button class="btn btn-primary" type="submit">저장</button></div></form></div>
       <div class="sectionline"><div class="sectiontitle">운동 히스토리</div><div class="smallhint">총 ${sorted.length}회 완료</div></div>
       <div class="card recordcard">${sorted.length ? sorted.slice(0,30).map(item=>`<div class="recorditem"><div><div class="date">${new Date(item.completedAt).toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'short'})}</div><div class="main">${item.plan==='A'?'A 루틴 · 전신 근력':'B 루틴 · 근력 + 코어'}</div></div><div class="mins">${Math.round(item.minutes)}분 · 완료</div></div>`).join(''):'<div class="empty">첫 운동을 완료하면 여기에 기록됩니다.</div>'}</div>
@@ -152,9 +291,10 @@
     <div class="sectionline"><div class="sectiontitle">운동 강도</div></div><div class="card formbox">${settingRow({name:'본운동 라운드',desc:'처음에는 2라운드, 익숙해지면 3라운드',key:'rounds',min:1,max:4,value:s.rounds})}${settingRow({name:'운동 사이 휴식',desc:'일반 동작 완료 후 휴식 시간',key:'rest',min:10,max:90,step:5,value:s.rest,unit:'초'})}${settingRow({name:'라운드 사이 휴식',desc:'다음 라운드가 시작될 때',key:'longRest',min:20,max:150,step:5,value:s.longRest,unit:'초'})}</div>
     <div class="sectionline"><div class="sectiontitle">알림</div></div><div class="card formbox"><div class="settings-row"><div><strong>효과음</strong><p>타이머 종료와 단계 전환 시 소리 재생 시도</p></div><input class="toggle" type="checkbox" data-setting="sound" aria-label="효과음" ${s.sound?'checked':''}/></div><div class="settings-row"><div><strong>한국어 음성 안내</strong><p>지원되는 브라우저에서 다음 동작 읽기</p></div><input class="toggle" type="checkbox" data-setting="speech" aria-label="음성 안내" ${s.speech?'checked':''}/></div></div>
     <p class="setting-help">아이폰의 절전·화면 잠금·브라우저 정책에 따라 소리나 자동 안내가 재생되지 않을 수 있습니다. 운동 중에는 앱을 화면에 유지하세요. 아이폰 PWA에서는 진동이 지원되지 않을 수 있어 기능에서 제외했습니다.</p>
-    <div class="sectionline"><div class="sectiontitle">체중 목표</div></div><div class="card formbox"><form id="target-form"><label class="formlabel" for="target">목표 체중 (kg)</label><div class="field"><input class="textinput" id="target" type="number" min="50" max="91" step="0.5" value="${num(s.targetWeight,50,91)}" required/><button class="btn btn-primary" type="submit">저장</button></div></form></div>
-    <div class="sectionline"><div class="sectiontitle">내 데이터</div></div><div class="card formbox"><button class="btn btn-outline btn-full" data-action="export">↓ 운동 기록 JSON 백업</button><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="import">↑ 백업 복원</button><input type="file" accept="application/json,.json" id="backup-file" class="hidden"/><div style="height:10px"></div><button class="btn btn-ghost btn-full" data-action="reset-confirm">모든 기록 초기화</button></div>
-    <p class="fineprint">칼리코치 v1.0 · 데이터는 서버로 전송되지 않습니다. 공개 GitHub Pages 저장소에 개인 운동 기록 파일을 업로드하지 마세요.</p></div>${navigation('settings')}`;
+    <div class="sectionline"><div class="sectiontitle">내 신체정보</div></div><div class="card formbox"><div class="settings-row"><div><strong>${escapeHtml(currentUser().name)} · ${escapeHtml(currentUser().gender)}</strong><p>만 ${profileAge(data.profile?.birthdate)}세 · 키 ${data.profile?.height}cm · 목표 체중 ${goalWeight()}kg</p></div><button class="btn btn-outline" data-action="go-profile">수정</button></div><div class="settings-row"><div><strong>사용자 전환</strong><p>이 기기의 다른 사용자로 변경</p></div><button class="btn btn-outline" data-action="logout">로그아웃</button></div></div>
+        <div class="sectionline"><div class="sectiontitle">내 데이터</div></div><div class="card formbox"><button class="btn btn-outline btn-full" data-action="export">↓ 운동 기록 JSON 백업</button><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="import">↑ 백업 복원</button><input type="file" accept="application/json,.json" id="backup-file" class="hidden"/><div style="height:10px"></div><button class="btn btn-ghost btn-full" data-action="reset-confirm">모든 기록 초기화</button></div>
+    ${currentUserId==='park' && localStorage.getItem(LEGACY_KEY)?'<div class="card formbox"><strong>이전 버전 기록 가져오기</strong><p class="setting-help">이 기기의 v1.0 운동 기록을 박무승 계정으로 복사할 수 있습니다. 기존 데이터는 보존됩니다.</p><button class="btn btn-outline btn-full" data-action="migrate-legacy-confirm">v1.0 기록 가져오기</button></div>':''}
+    <p class="fineprint">칼리코치 v1.1 · 로그인과 기록은 각 기기에만 저장됩니다. 다른 아이폰과 동기화되지 않습니다. 공용 기기에서는 다른 사용자도 이름을 선택해 볼 수 있으므로 주의하세요.</p></div>${navigation('settings')}`;
   }
   const targetText = (step,amount,seconds) => exercise[step.id].type==='timed' ? `${seconds}` : `${amount}`;
   const remainingTime = (active) => Math.max(0,Math.ceil(((active.timerEndAt || Date.now())-Date.now())/1000));
@@ -188,11 +328,12 @@
     const e=currentStep()?exercise[currentStep().id]:null;
     if(modal==='details' && e) return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" aria-label="운동 자세"><h2>${escapeHtml(e.title)} · 자세 포인트</h2><p>${escapeHtml(e.cue)}</p><ul>${e.tips.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul><div class="alert">허리나 발바닥 통증이 뚜렷하게 심해지면 그 동작은 중단하고 강도를 조정하세요.</div><div class="modal-buttons"><button class="btn btn-primary" data-action="close-modal">확인</button></div></section></div>`;
     if(modal==='quit')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>운동을 종료할까요?</h2><p>지금 종료하면 이번 회차는 완료 기록에 포함되지 않습니다. 앱을 닫아도 진행 상태는 남아 있습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">계속 운동</button><button class="btn btn-primary" data-action="quit">종료</button></div></section></div>`;
-    if(modal==='reset')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>모든 기록을 초기화할까요?</h2><p>운동 기록과 체중 기록, 설정이 초기화됩니다. 되돌릴 수 없으니 백업 파일을 먼저 저장하는 것이 좋습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="reset">초기화</button></div></section></div>`;
+    if(modal==='reset')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>이 계정의 운동 기록을 초기화할까요?</h2><p>현재 사용자 운동·체중 기록과 운동 설정이 초기화됩니다. 신체정보와 다른 사용자 데이터는 유지됩니다. 먼저 백업하는 것이 좋습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="reset">초기화</button></div></section></div>`;
+    if(modal==='legacy')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>v1.0 기록 가져오기</h2><p>박무승 계정의 현재 운동 기록과 체중 기록을 이전 버전 기록으로 교체합니다. 현재 기록은 먼저 백업하세요. v1.0 원본은 그대로 남습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="migrate-legacy">가져오기</button></div></section></div>`;
     if(modal==='import')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>백업을 복원할까요?</h2><p>현재 기기의 기록을 선택한 백업 파일로 덮어씁니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="import-confirm">복원</button></div></section></div>`;
     return '';
   }
-  function render(){const html = view==='workout'?renderWorkout():view==='finish'?renderFinish():view==='history'?renderHistory():view==='settings'?renderSettings():renderHome(); root.innerHTML=html+modalHtml();document.title=`칼리코치 · ${view==='workout'?'운동 중':'내 운동 앱'}`;}
+  function render(){const html=view==='login'?renderLogin():view==='profile'?renderProfile():view==='workout'?renderWorkout():view==='finish'?renderFinish():view==='history'?renderHistory():view==='settings'?renderSettings():renderHome();root.innerHTML=html+modalHtml();document.title=`칼리코치 · ${view==='login'?'로그인':view==='profile'?'신체정보':view==='workout'?'운동 중':'내 운동 앱'}`;}
   function ensureAudio(){if(!data.settings.sound)return;try {const Ctx = window.AudioContext||window.webkitAudioContext;if(Ctx){audioContext=audioContext||new Ctx();if(audioContext.state==='suspended')audioContext.resume().catch(()=>{});}}catch{}}
   function beep(){if(!data.settings.sound || !audioContext || audioContext.state!=='running')return;try{const oscillator=audioContext.createOscillator(),volume=audioContext.createGain();oscillator.type='sine';oscillator.frequency.value=780;volume.gain.setValueAtTime(.0001,audioContext.currentTime);volume.gain.exponentialRampToValueAtTime(.085,audioContext.currentTime+.03);volume.gain.exponentialRampToValueAtTime(.0001,audioContext.currentTime+.22);oscillator.connect(volume);volume.connect(audioContext.destination);oscillator.start();oscillator.stop(audioContext.currentTime+.23);}catch{}}
   function speak(message) {
@@ -214,7 +355,8 @@
   function startSession(){
     if(data.active){view='workout';render();return;}
     const plan=data.nextPlan;
-    data.active={plan,rounds:num(data.settings.rounds,1,4),index:0,completedSteps:0,mode:'work',previousMode:null,startedAt:Date.now(),timerEndAt:Date.now()+getAmount('prep1')*1000,remaining:null};
+    const rounds=num(data.settings.rounds,1,4);
+    data.active={plan,rounds,steps:buildSteps(plan,rounds),index:0,completedSteps:0,mode:'work',previousMode:null,startedAt:Date.now(),timerEndAt:Date.now()+getAmount('prep1')*1000,remaining:null};
     view='workout';modal=null;save();ensureAudio();speak('준비운동 시작. 어깨와 팔을 가볍게 풀어주세요.');render();keepAwake();
   }
   function doneStep(isSkip=false){
@@ -244,36 +386,59 @@
     if(a.timerEndAt && Date.now()>=a.timerEndAt){if(a.mode==='rest')startFromRest();else if(a.mode==='work'&&exercise[currentStep().id].type==='timed')doneStep();return;}
     const output=$('[data-countdown]');if(output && a.timerEndAt)output.textContent=String(remainingTime(a));
   }
-  async function downloadBackup() {
-    const blob=new Blob([JSON.stringify({app:'calicoach',version:1,exportedAt:new Date().toISOString(),data},null,2)],{type:'application/json'});
-    const filename=`calicoach-backup-${dateStr()}.json`;
-    if(typeof File!=='undefined' && navigator.share && navigator.canShare) {
-      try {
-        const file=new File([blob],filename,{type:'application/json'});
-        if(navigator.canShare({files:[file]})) { await navigator.share({files:[file],title:'칼리코치 운동 기록 백업'});return; }
-      }catch(err){if(err?.name==='AbortError')return;console.warn('공유 시트 사용 실패',err);}
+  async function downloadBackup(){
+    const blob=new Blob([JSON.stringify({app:'calicoach',version:2,userId:currentUserId,exportedAt:new Date().toISOString(),data},null,2)],{type:'application/json'});
+    const filename=`calicoach-${currentUserId}-backup-${dateStr()}.json`;
+    if(typeof File!=='undefined'&&navigator.share&&navigator.canShare){
+      try{const file=new File([blob],filename,{type:'application/json'});if(navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'칼리코치 개인 백업'});return;}}
+      catch(err){if(err?.name==='AbortError')return;console.warn('공유 시트 사용 실패',err);}
     }
-    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),8000);
+    const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),8000);
   }
   let importCandidate=null;
-  async function handleImport(input){const file=input?.files?.[0];if(!file)return;try{
-      const obj=JSON.parse(await file.text());if(obj.app!=='calicoach'||obj.version!==1||!obj.data||!Array.isArray(obj.data.workouts)||!Array.isArray(obj.data.weights))throw new Error('올바른 칼리코치 백업 파일이 아닙니다.');
-      if(obj.data.workouts.length>10000||obj.data.weights.length>10000)throw new Error('데이터 개수가 너무 많습니다.');
-      importCandidate=obj.data;modal='import';render();
-    }catch(err){alert(`백업을 열 수 없습니다: ${err.message}`);}}
-  function restore(){if(!importCandidate)return;
-    const item=importCandidate;const def=DEFAULTS();
-    const safeWeights=item.weights.filter(w=>/^\d{4}-\d{2}-\d{2}$/.test(w.date) && Number.isFinite(Number(w.weight)) && Number(w.weight)>=30 && Number(w.weight)<=250).map(w=>({date:w.date,weight:Number(w.weight)}));
-    const safeWorkouts=item.workouts.filter(w=>['A','B'].includes(w.plan)&&!Number.isNaN(new Date(w.completedAt).valueOf())).map(w=>({plan:w.plan,completedAt:w.completedAt,minutes:num(w.minutes,1,999),stepsCompleted:num(w.stepsCompleted,0,500)}));
-    data={settings:{...def.settings,rounds:num(item.settings?.rounds,1,4),rest:num(item.settings?.rest,10,90),longRest:num(item.settings?.longRest,20,150),sound:!!item.settings?.sound,speech:!!item.settings?.speech,targetWeight:num(item.settings?.targetWeight,50,91),reps:{}},weights:safeWeights.length?safeWeights:def.weights,workouts:safeWorkouts,nextPlan:item.nextPlan==='B'?'B':'A',active:null};
-    for(const [k,v] of Object.entries(item.settings?.reps||{}))if(exercise[k] && Number.isFinite(Number(v)))data.settings.reps[k]=num(v,1,80);
-    view='home';modal=null;importCandidate=null;save();render();alert('백업 복원이 완료되었습니다.');
+  async function handleImport(input){
+    const file=input?.files?.[0];if(!file)return;
+    try{
+      if(file.size>4000000)throw new Error('백업 파일 크기가 너무 큽니다.');
+      const obj=JSON.parse(await file.text());
+      if(obj.app!=='calicoach'||![1,2].includes(obj.version)||!obj.data||!Array.isArray(obj.data.workouts)||!Array.isArray(obj.data.weights))throw new Error('올바른 칼리코치 백업이 아닙니다.');
+      if(obj.data.workouts.length>10000||obj.data.weights.length>10000)throw new Error('기록 개수가 너무 많습니다.');
+      if(obj.version===2&&obj.userId!==currentUserId)throw new Error('다른 사용자 백업은 가져올 수 없습니다.');
+      if(obj.version===1&&currentUserId!=='park')throw new Error('v1.0 백업은 박무승 계정에만 가져올 수 있습니다.');
+      importCandidate=obj;modal='import';render();
+    }catch(err){alert(`백업을 열 수 없습니다: ${err.message}`);}
+  }
+  function restore(){
+    if(!importCandidate)return;
+    const item=importCandidate.data,def=DEFAULTS();
+    const safeWeights=item.weights.filter(w=>w&&/^\d{4}-\d{2}-\d{2}$/.test(w.date)&&Number.isFinite(Number(w.weight))&&Number(w.weight)>=30&&Number(w.weight)<=250).map(w=>({date:w.date,weight:Number(w.weight)}));
+    const safeWorkouts=item.workouts.filter(w=>w&&['A','B'].includes(w.plan)&&!Number.isNaN(new Date(w.completedAt).valueOf())).map(w=>({plan:w.plan,completedAt:w.completedAt,minutes:num(w.minutes,1,999),stepsCompleted:num(w.stepsCompleted,0,500)}));
+    const importedProfile=importCandidate.version===2 ? item.profile : data.profile;
+    // 버전 1에서는 프로필을 덮어쓰지 않으며, 현재 사용자 프로필을 유지합니다.
+    const validProfile=importedProfile&&Number(importedProfile.height)>=120&&Number(importedProfile.height)<=230 ? importedProfile : data.profile;
+    data={profile:validProfile,settings:{...def.settings,rounds:num(item.settings?.rounds,1,4),rest:num(item.settings?.rest,10,90),longRest:num(item.settings?.longRest,20,150),sound:!!item.settings?.sound,speech:!!item.settings?.speech,targetWeight:Number(validProfile?.targetWeight||0),reps:{}},weights:safeWeights,workouts:safeWorkouts,nextPlan:item.nextPlan==='B'?'B':'A',active:null};
+    for(const [k,v] of Object.entries(item.settings?.reps||{}))if(exercise[k]&&Number.isFinite(Number(v)))data.settings.reps[k]=num(v,1,80);
+    view=data.profile?'home':'profile';modal=null;importCandidate=null;save();render();alert('현재 사용자 기록으로 백업을 복원했습니다.');
+  }
+  function migrateLegacy(){
+    if(currentUserId!=='park')return;
+    try{
+      const old=JSON.parse(localStorage.getItem(LEGACY_KEY));
+      if(!old||!Array.isArray(old.workouts)||!Array.isArray(old.weights))throw new Error('기존 데이터를 찾을 수 없습니다.');
+      importCandidate={app:'calicoach',version:1,data:old};restore();
+    }catch(err){modal=null;render();alert(`이전 기록을 가져올 수 없습니다: ${err.message}`);}
   }
   root.addEventListener('click',event => {
     const button=event.target.closest('[data-action]');if(!button)return;
     const action=button.dataset.action;
     if(action==='close-modal'){modal=null;render();return;}
-    if(modal && !['quit','reset','import-confirm'].includes(action))return;
+    if(modal && !['quit','reset','import-confirm','migrate-legacy'].includes(action))return;
+    if(action==='pick-user'){const u=findUser(button.dataset.value),input=$('#login-name');if(u&&input){input.value=u.name;input.focus();}return;}
+    if(action==='logout'){signOut();return;}
+    if(action==='go-profile'){view='profile';window.scrollTo(0,0);render();return;}
+    if(action==='profile-back'){view='settings';render();return;}
+    if(action==='migrate-legacy-confirm'){modal='legacy';render();return;}
+    if(action==='migrate-legacy'){migrateLegacy();return;}
     if(action==='nav'){view=button.dataset.value;window.scrollTo(0,0);render();return;}
     if(action==='start'||action==='resume'){ensureAudio();startSession();return;}
     if(action==='done'){doneStep();return;}
@@ -298,18 +463,31 @@
     if(action==='import'){$('#backup-file')?.click();return;}
     if(action==='import-confirm'){restore();return;}
     if(action==='reset-confirm'){modal='reset';render();return;}
-    if(action==='reset'){data=DEFAULTS();lastFinished=null;modal=null;view='home';save();render();return;}
+    if(action==='reset'){
+      const oldProfile=data.profile;
+      data=DEFAULTS();data.profile=oldProfile;
+      data.settings.targetWeight=Number(oldProfile?.targetWeight||0);
+      data.settings.rounds=recommendedRounds(oldProfile);
+      data.weights=oldProfile?[{date:dateStr(),weight:Number(oldProfile.weight)}]:[];
+      lastFinished=null;modal=null;view='home';save();render();return;
+    }
   });
   root.addEventListener('submit',event => {
-    const form=event.target;if(!['weight-form','target-form'].includes(form.id))return;event.preventDefault();
+    const form=event.target;if(!['login-form','profile-form','weight-form','target-form'].includes(form.id))return;event.preventDefault();
+    if(form.id==='login-form'){
+      const typed=String(new FormData(form).get('username')||'').trim(),u=USERS.find(x=>x.name===typed);
+      if(!u){const error=$('#login-error');if(error){error.hidden=false;error.textContent='등록된 세 명의 이름 중 하나를 정확히 입력해주세요.';}return;}
+      signIn(u.id,!!$('#remember-login')?.checked);return;
+    }
+    if(form.id==='profile-form'){saveProfile(form);return;}
     if(form.id==='weight-form'){
       const weight=Number($('#weight')?.value);
       if(!Number.isFinite(weight)||weight<30||weight>250){alert('30~250kg 사이의 올바른 체중을 입력해주세요.');return;}
-      data.weights=data.weights.filter(w=>w.date!==dateStr());data.weights.push({date:dateStr(),weight:Math.round(weight*10)/10});save();render();return;
+      data.weights=data.weights.filter(w=>w.date!==dateStr());data.weights.push({date:dateStr(),weight:Math.round(weight*10)/10});if(data.profile)data.profile.weight=Math.round(weight*10)/10;save();render();return;
     }
     const target=Number($('#target')?.value);
-    if(!Number.isFinite(target)||target<50||target>91){alert('목표 체중을 50~91kg 범위에서 입력해주세요.');return;}
-    data.settings.targetWeight=target;save();render();
+    if(!Number.isFinite(target)||target<30||target>250){alert('목표 체중은 30~250kg 범위에서 입력해주세요.');return;}
+    data.settings.targetWeight=target;if(data.profile)data.profile.targetWeight=target;save();render();
   });
   root.addEventListener('change',event => {
     const target=event.target;
