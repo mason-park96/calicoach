@@ -68,6 +68,6 @@ assert.equal(engine.nextPlan(result.programIndex,p.days),'B');
 const legacyStore=new Storage();const oldDevice=JSON.parse(one.local.getItem('calicoach.pwa.v3.device'));delete oldDevice.programIndex;delete oldDevice.progress;legacyStore.setItem('calicoach.pwa.v3.device',JSON.stringify(oldDevice));
 assert.equal(boot(legacyStore).api.getState().data.programIndex,1);
 const index=fs.readFileSync(path.join(rootDir,'index.html'),'utf8');assert(index.includes('coach-engine.js'));
-const sw=fs.readFileSync(path.join(rootDir,'sw.js'),'utf8');assert(sw.includes('calicoach-shell-v1.4.0'));
+const sw=fs.readFileSync(path.join(rootDir,'sw.js'),'utf8');assert(sw.includes('calicoach-shell-v1.4.1'));
 for(const id of [...Object.keys(engine.MOVES),'prep1','prep2','prep3','prep4','cool1','cool2'])assert(fs.existsSync(path.join(rootDir,'media',`${id}.gif`)),`missing media ${id}`);
 console.log('PASS: 27 plan combinations, 9 area flags, no duplicates, feedback progression, local data migration, user isolation, all media present');

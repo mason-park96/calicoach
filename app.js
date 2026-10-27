@@ -1,4 +1,4 @@
-/* Calisthenics Coach PWA v1.4 — posture learning and explicit profile confirmation */
+/* Calisthenics Coach PWA v1.4.1 — reviewed video media support */
 (() => {
   'use strict';
   // v1.2: 계정/로그인 없이 이 기기의 단일 프로필을 사용합니다.
@@ -119,7 +119,15 @@
   const Coach=window.CalicoachEngine;
   if(!Coach)throw Error('운동 계획 엔진을 불러오지 못했습니다. 앱을 새로고침하세요.');
   const mediaSrc=id=>`./media/${encodeURIComponent(id)}.gif`;
-  const mediaHtml=(id,small=false)=>`<img src="${mediaSrc(id)}" alt="${escapeHtml(exercise[id]?.title||'운동')} 동작 개념 애니메이션" class="${small?'exercise-preview-gif':'exercise-motion-gif'}" loading="${small?'lazy':'eager'}" />`;
+  const VideoCatalog=window.CalicoachVideoCatalog||{};
+  const SourceCandidates=window.CalicoachSourceCandidates||{};
+  const videoSource=id=>VideoCatalog[id]?.file||null;
+  function mediaHtml(id,small=false){
+    const alt=escapeHtml(exercise[id]?.title||'운동');
+    const gif=`<img src="${mediaSrc(id)}" alt="${alt} 동작 개념 애니메이션" class="${small?'exercise-preview-gif':'exercise-motion-gif'}" loading="${small?'lazy':'eager'}" />`;
+    if(small||!videoSource(id))return gif;
+    return `<video class="exercise-real-video" data-id="${id}" src="${escapeHtml(videoSource(id))}" poster="${mediaSrc(id)}" muted autoplay loop playsinline preload="metadata" aria-label="${alt} 실제 사람 동작 시연"></video>`;
+  }
   const stepKey=step=>`${step.phase}:${step.round}:${step.id}`;
   const PLANS = {
     A:{label:'A 루틴',subtitle:'전신 근력 · 기본기',items:['push','squat','reverse','wraise','dead'],extra:['bridge','plank']},
@@ -315,7 +323,7 @@
       ${rest ? `<div class="reststage"><div class="eyebrow">RECOVER & RESET</div><h1 class="exercise-title">잠깐 숨 고르기</h1><div class="restbubble" style="margin-top:36px"><div class="restnumber" data-countdown>${displayTime}</div><div class="restsmall">초 후 다음 운동</div></div><div class="restnext">다음 동작<strong>${escapeHtml(e.title)}</strong></div><button type="button" class="guide-rest-button" data-action="details" data-id="${step.id}">다음 동작 미리 배우기 ›</button></div><div class="action-area"><button class="btn btn-primary btn-full" data-action="skip-rest">바로 다음 운동 →</button>${controls}</div>`:
       `<main class="workout-stage"><div class="stage-line"><span class="phasepill">${PHASES[step.phase]}</span><span class="stage-count">${active.index+1} / ${steps.length}</span></div>
         <h1 class="exercise-title">${escapeHtml(e.title)}</h1><p class="exercise-subtitle">${step.phase==='main'?`${step.round} / ${active.rounds} 라운드 · `:''}${escapeHtml(e.range || (e.type==='timed'?'시간 운동':'정확한 자세로 수행'))}</p>
-        <div class="exercise-figure">${mediaHtml(step.id)}<div class="figure-number">간략 동작 개념도 · ${step.phase.toUpperCase()}</div></div>
+        <div class="exercise-figure">${mediaHtml(step.id)}<div class="figure-number">${videoSource(step.id)?'실제 동작 시연':'간략 동작 개념도'} · ${step.phase.toUpperCase()}</div></div>
         <div class="targetcenter"><div><span class="target-value" ${e.type==='timed'?'data-countdown':''}>${e.type==='timed'?displayTime:getAmount(step.id)}</span><span class="target-unit">${e.unit}</span></div><div class="target-help">${e.type==='timed'?(paused?'일시정지됨':'시간이 끝나면 자동으로 넘어갑니다'):(e.each?'왼쪽·오른쪽 각각 수행하세요':'완료 후 아래 버튼을 누르세요')}</div>
           ${e.type==='reps'?`<div class="target-adjust"><button class="miniadjust" data-action="rep-minus" aria-label="횟수 줄이기">−</button><small>오늘의 목표 횟수 조절</small><button class="miniadjust" data-action="rep-plus" aria-label="횟수 늘리기">+</button></div>`:''}</div>
         <div class="tipbox"><span>✦</span><p>${escapeHtml(e.cue)} <button data-action="details" data-id="${step.id}" style="background:none;border:0;color:var(--accent);padding:0 0 0 3px;font-size:12px;font-weight:850">동작 배우기 ›</button></p></div>
@@ -332,10 +340,12 @@
       const id=detailExerciseId, detail=exercise[id], guide=Guides[id], ref=guide?.reference;
       return `<div class="modal-backdrop"><section class="modal guide-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(detail.title)} 동작 배우기">
         <div class="guide-header"><h2>${escapeHtml(detail.title)} · 동작 배우기</h2><button class="guide-close" data-action="close-modal" aria-label="닫기">×</button></div>
-        <p class="guide-media-label">간략 움직임 참고 (정확한 인체 자세는 아래 자료 확인)</p>${mediaHtml(id)}
+        <p class="guide-media-label">${videoSource(id)?'실제 사람의 운동 동작 시연 · 음소거 자동 반복':'개념 애니메이션 · 아래에서 실제 영상 후보를 확인하세요'}</p>${mediaHtml(id)}
+        ${videoSource(id)?`<div class="video-controls"><button type="button" data-action="video-speed" data-speed="0.5">0.5배속</button><button type="button" data-action="video-speed" data-speed="1">1배속</button><span>영상을 눌러 일시정지/재생</span></div>`:''}
         <div class="guide-steps">
           ${[['01','시작 자세',guide?.start||detail.cue],['02','동작 수행',guide?.move||detail.cue],['03','자세 확인',guide?.check||detail.tips[0]]].map(([n,title,desc])=>`<div class="guide-step"><span class="guide-step-n">${n}</span><div><b>${title}</b><p>${escapeHtml(desc||'')}</p></div></div>`).join('')}
         </div>
+        ${!videoSource(id) && SourceCandidates[id] ? `<a class="guide-reference" href="${escapeHtml(SourceCandidates[id].url)}" target="_blank" rel="noopener noreferrer">↗ 실제 사람이 시연하는 영상 후보 보기 <small>Pexels · 운동 일치 여부는 직접 확인해야 함</small></a>` : ''}
         ${ref ? `<a class="guide-reference" href="${escapeHtml(ref.url)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(ref.label)} 열기 <small>외부 교육 페이지 · 인터넷 필요</small></a>` : `<div class="guide-reference-note">이 동작의 검증된 실제 시연 링크는 아직 준비 중입니다. 설명을 익히고 어렵다면 건너뛰거나 더 쉬운 동작을 선택하세요.</div>`}
         <div class="alert">통증이 발생하면 동작을 중단하고 강도를 조정하세요.</div>
         <button class="btn btn-primary btn-full" data-action="close-modal">확인 · 운동으로 돌아가기</button>
@@ -444,8 +454,18 @@
     }catch(err){modal=null;render();alert(`이전 기록을 가져올 수 없습니다: ${err.message}`);}
   }
   root.addEventListener('click',event => {
+    if(event.target?.tagName==='VIDEO' && event.target.classList?.contains('exercise-real-video')){
+      const video=event.target;
+      if(video.paused)video.play().catch(()=>{});else video.pause();
+      return;
+    }
     const button=event.target.closest('[data-action]');if(!button)return;
     const action=button.dataset.action;
+    if(action==='video-speed'){
+      const video=root.querySelector('.guide-modal .exercise-real-video');
+      if(video){video.playbackRate=Number(button.dataset.speed)||1;}
+      return;
+    }
     if(action==='close-modal'){modal=null;render();return;}
     if(modal && !['quit','reset','import-confirm','migrate-legacy'].includes(action))return;
     if(action==='go-profile'){profileAppliedMessage=false;view='profile';window.scrollTo(0,0);render();return;}
@@ -491,6 +511,13 @@
       lastFinished=null;modal=null;view='home';save();render();return;
     }
   });
+  root.addEventListener('error',event=>{
+    if(event.target?.matches?.('video.exercise-real-video')){
+      const video=event.target;
+      const id=video.getAttribute('data-id');
+      if(id && exercise[id])video.outerHTML=`<img src="${mediaSrc(id)}" class="exercise-motion-gif" alt="${escapeHtml(exercise[id].title)} 영상 재생 불가, 개념 애니메이션" />`;
+    }
+  },true);
   root.addEventListener('submit',event => {
     const form=event.target;if(!['profile-form','weight-form','target-form'].includes(form.id))return;event.preventDefault();
     if(form.id==='profile-form'){saveProfile(form);return;}

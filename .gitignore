@@ -1,0 +1,4 @@
+# downloaded video drafts are not published before manual review
+media/pending/
+__pycache__/
+*.pyc
