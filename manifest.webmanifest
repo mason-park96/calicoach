@@ -1,0 +1,16 @@
+{
+  "id": "./",
+  "name": "칼리코치 · Calisthenics Coach",
+  "short_name": "칼리코치",
+  "description": "생각하지 말고 따라하는 나만의 30분 맨몸운동 코치",
+  "lang": "ko-KR",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b111a",
+  "theme_color": "#0b111a",
+  "icons": [
+    {"src": "./icons/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable"},
+    {"src": "./icons/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable"}
+  ]
+}
