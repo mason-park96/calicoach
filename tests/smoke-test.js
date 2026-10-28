@@ -9,28 +9,31 @@ for(const level of ['beginner','intermediate','advanced'])for(const minutes of [
  assert(selected.items.every(id=>engine.MOVES[id]),selected.items.join(','));
  assert.equal(new Set(selected.items).size,selected.items.length,'No duplicated movements');
  assert(selected.items.some(id=>engine.MOVES[id].category==='push'));
- assert(selected.items.some(id=>engine.MOVES[id].category==='pull'));
+ assert(selected.items.some(id=>engine.MOVES[id].category==='scapular'));
 }
 assert.equal(engine.nextPlan(2,3),'C');assert.equal(engine.nextPlan(2,2),'A');
 assert.equal(engine.safeChoice('reverse',{adjustAreas:['foot']}),'split');
 assert.equal(engine.safeChoice('plank',{adjustAreas:['wrist']}),'dead');
-assert.equal(engine.safeChoice('split',{adjustAreas:['knee']}),'bridge');
+assert.equal(engine.safeChoice('split',{adjustAreas:['knee']}),null);
 assert.equal(engine.targetAmount('push',p,{}),8);
-const steps=[0,1,2].map(i=>({id:'push',phase:'main',round:i+1,key:`main:${i+1}:push`}));
-let progress={};for(let i=0;i<4;i++)progress=engine.applyFeedback(progress,steps,Object.fromEntries(steps.map(s=>[s.key,'easy'])));
-assert(progress.push.tier===1,'Repeated easy sessions should promote tier');
-progress=engine.applyFeedback(progress,steps,{[steps[0].key]:'hard'});assert(progress.push.easySessions===0);
-const noKey=steps.map(({key,...other})=>other);const withoutKey=engine.applyFeedback({},noKey,Object.fromEntries(steps.map(s=>[s.key,'easy'])));assert.equal(withoutKey.push.bonus,1,'feedback must work with real buildSteps lacking key');
+const steps=[0,1,2].map(i=>({id:'knee',phase:'main',round:i+1,key:`main:${i+1}:knee`,amount:12}));
+const topFeedback=Object.fromEntries(steps.map(s=>[s.key,{vote:'easy',actual:12,rir:4}]));
+let progress={};for(let i=0;i<2;i++)progress=engine.applyFeedback(progress,steps,topFeedback,p);
+assert.equal(progress.choices.horizontalPush,undefined,'Easy sessions do not override the selected training level');
+progress=engine.applyFeedback(progress,[{...steps[0],id:'push',amount:6}],{[steps[0].key]:{vote:'hard',actual:3}},p);
+assert.equal(progress.choices.horizontalPush,'knee','Below-minimum performance downgrades the variant');
+const oldVotes=engine.applyFeedback({},steps,Object.fromEntries(steps.map(s=>[s.key,'easy'])),p);
+assert.equal(oldVotes.exercises.knee.successes,0,'Old votes cannot stand in for actual repetitions');
 class Storage{constructor(){this.map={}}get length(){return Object.keys(this.map).length}key(i){return Object.keys(this.map)[i]??null}getItem(k){return this.map[k]??null}setItem(k,v){this.map[k]=String(v)}removeItem(k){delete this.map[k]}}
 const guideContext={window:{}};vm.runInNewContext(fs.readFileSync(path.join(rootDir,'exercise-guides.js'),'utf8'),guideContext);
 const videoContext={window:{}};vm.runInNewContext(fs.readFileSync(path.join(rootDir,'video-catalog.js'),'utf8'),videoContext);
-const code=fs.readFileSync(path.join(rootDir,'app.js'),'utf8').replace('  render();setInterval(tick,250);', '  globalThis.TEST={getState:()=>({view,data:structuredClone(data),html:root.innerHTML}),saveProfile,startSession,completeSession,planFor,buildSteps,render,saveWeight,weightChanges,monthlyWorkouts,shiftMonth};render();setInterval(tick,250);');
+const code=fs.readFileSync(path.join(rootDir,'app.js'),'utf8').replace('  render();setInterval(tick,250);', '  globalThis.TEST={getState:()=>({view,data:structuredClone(data),html:root.innerHTML}),saveProfile,startSession,completeSession,planFor,buildSteps,render,saveWeight,weightChanges,monthlyWorkouts,shiftMonth,saveWalking,recordSet,doneStep,tick,restore,handleImport,setTrainingLevel};render();setInterval(tick,250);');
 function boot(local=new Storage(),tab=new Storage()){
  const handlers={};const root={innerHTML:'',addEventListener:(name,fn)=>{handlers[name]=fn}};
  const document={getElementById:id=>id==='app'?root:null,addEventListener:()=>{},querySelector:()=>null};
  const window={scrollTo:()=>{},addEventListener:()=>{},AudioContext:null,webkitAudioContext:null,CalicoachEngine:engine,CalicoachGuides:guideContext.window.CalicoachGuides,CalicoachVideoCatalog:videoContext.window.CalicoachVideoCatalog};
  const ctx={console,localStorage:local,sessionStorage:tab,window,document,navigator:{},location:{protocol:'file:'},setInterval:()=>{},setTimeout:()=>{},Date,Math,Number,String,Boolean,Object,Array,JSON,RegExp,Error,Blob,URL,structuredClone,FormData:class{constructor(form){this.fields=form.fields}get(k){return this.fields[k]}getAll(k){return this.fields[k]||[]}has(k){return Boolean(this.fields[k])}},alert:()=>{}};
- ctx.globalThis=ctx;vm.runInNewContext(code,ctx,{timeout:2000});return {api:ctx.TEST,root,local,handlers};
+ ctx.globalThis=ctx;vm.runInNewContext(code,ctx,{timeout:2000});return {api:ctx.TEST,root,local,handlers,document};
 }
 function form(name,overrides={}){return {fields:{name,gender:'남성',birthdate:'1996-07-12',height:'184',weight:'92',targetWeight:'80',level:'intermediate',days:'3',minutes:'30',focus:'balanced',pushups:'12',area:['back','foot'],...overrides}}}
 const one=boot();assert.equal(one.api.getState().view,'profile');
@@ -38,7 +41,7 @@ assert(one.root.innerHTML.includes('목·경추'));assert(one.root.innerHTML.inc
 assert.equal(one.api.saveProfile(form('박무승')),true);
 assert.equal(one.api.getState().data.profile.adjustAreas.length,2);
 assert(one.root.innerHTML.includes('오늘의 운동 미리보기'));
-assert(one.root.innerHTML.includes('프로필이 저장되었습니다.'));
+assert(one.root.innerHTML.includes('프로필 저장 완료'));
 assert(one.root.innerHTML.includes('동작 배우기'));
 assert(one.root.innerHTML.includes('exercise-preview-video'), 'Home preview uses actual footage');
 const click=(app,action,id,extra={})=>app.handlers.click({target:{closest:()=>({dataset:{action,id,...extra}})}});
@@ -63,7 +66,7 @@ assert(one.root.innerHTML.includes('바닥을 밀어 올라오세요'));
 click(one,'close-modal');
 assert(!one.root.innerHTML.includes('guide-modal'));
 
-one.api.startSession();assert.equal(one.api.getState().data.active.steps[4].id,'push');
+one.api.startSession();assert.equal(one.api.getState().data.active.steps.find(s=>s.phase==='main').id,'squat');
 click(one,'details','prep1');assert.equal(one.api.getState().data.active.mode,'paused','guide pauses active timed workout');
 assert(one.root.innerHTML.includes('시작 자세'));
 click(one,'close-modal');assert.equal(one.api.getState().data.active.mode,'paused','user must manually resume');
@@ -182,3 +185,138 @@ assert.equal(journalTab.getItem('calicoach.pwa.v2.tabUser'),null);
 assert.equal(journalStore.getItem('unrelated.setting'),'keep');assert.equal(journalTab.getItem('unrelated.tab'),'keep');
 assert.equal(boot(journalStore,journalTab).api.getState().data.profile,null,'Old profiles cannot migrate back after reset');
 console.log('PASS: monthly calendar, leap day, year boundaries, dated weight upsert, change rates, reset confirmation/cancel and legacy cleanup');
+
+// Exercise the real event handlers and persistence, not just planner helpers.
+function bootAtMain(overrides={}){
+  const app=boot();app.api.saveProfile(form('수행 검증',{area:[],...overrides}));app.api.startSession();
+  const raw=JSON.parse(app.local.getItem('calicoach.pwa.v3.device'));
+  raw.active.index=raw.active.steps.findIndex(s=>s.phase==='main');raw.active.mode='work';raw.active.timerEndAt=null;
+  app.local.setItem('calicoach.pwa.v3.device',JSON.stringify(raw));return boot(app.local);
+}
+const liveInput=bootAtMain();
+liveInput.document.querySelector=selector=>selector==='[data-actual="actual"]'?{value:'3'}:null;
+click(liveInput,'done');
+const liveActive=liveInput.api.getState().data.active;
+assert.equal(Object.values(liveActive.feedback)[0].actual,3,'Completion reads the live DOM value even before change/blur');
+assert(liveActive.steps.filter(s=>s.phase==='main'&&s.id==='squat'&&s.round>1).every(s=>s.amount===2));
+const trained=bootAtMain();
+const originalMain=trained.api.getState().data.active.steps.find(s=>s.phase==='main');
+assert(trained.root.innerHTML.includes('실제 수행 횟수'));
+trained.handlers.change({target:{dataset:{actual:'actual'},value:'3'}});
+click(trained,'rate-hard');
+const afterHard=trained.api.getState().data.active;
+assert.equal(afterHard.feedback[originalMain.key].actual,3);
+assert(afterHard.steps.filter(s=>s.phase==='main'&&s.id===originalMain.id&&s.round>1).every(s=>s.amount<originalMain.amount),'Remaining sets are reduced immediately');
+trained.api.completeSession();
+const trainingResult=trained.api.getState().data;
+assert(trainingResult.progress.exercises.squat.target<originalMain.amount);
+assert.equal(trainingResult.workouts[0].steps.find(s=>s.key===originalMain.key).amount,originalMain.amount,'Original prescription survives adjustment');
+assert.equal(trainingResult.workouts[0].feedback[originalMain.key].actual,3);
+click(trained,'nav',undefined,{value:'history'});
+assert(trained.root.innerHTML.includes('실제 3회'));
+trained.api.startSession();
+assert.equal(trained.api.getState().data.active,null,'Consecutive-day hard sessions require recovery');
+assert(trained.root.innerHTML.includes('회복 확인'));
+click(trained,'start-light');
+assert(trained.api.getState().data.active.prescription.slots.every(s=>s.sets===1));
+assert.equal(trained.api.getState().data.active.light,true);
+trained.api.completeSession();
+assert.equal(trained.api.getState().data.programIndex,1,'Light sessions do not advance the strength rotation');
+
+const painApp=bootAtMain();
+painApp.handlers.change({target:{dataset:{actual:'actual'},value:'invalid'}});
+click(painApp,'rate-pain');
+const painState=painApp.api.getState().data;
+assert.equal(painState.active.mode,'paused','Pain pauses progression to the next exercise');
+assert.equal(painState.active.completedSteps,0,'A painful interrupted set is not completed');
+assert(painApp.root.innerHTML.includes('통증으로 이 운동 범주를 제외했습니다.'),'Pain notice is visible during paused rest');
+click(painApp,'prev');
+assert.equal(painApp.api.getState().data.active.index,painState.active.index,'Previous cannot restart the painful movement');
+assert(painState.progress.blocked.kneeDominant);
+assert(!painState.active.steps.slice(painState.active.index).some(s=>s.phase==='main'&&s.pattern==='kneeDominant'));
+assert(boot(painApp.local).api.getState().data.progress.blocked.kneeDominant,'Pain exclusions survive reload');
+
+const skipped=bootAtMain();const skippedMain=skipped.api.getState().data.active.steps.find(s=>s.phase==='main');
+click(skipped,'skip-step');
+assert.equal(skipped.api.getState().data.active.feedback[skippedMain.key].status,'skipped');
+
+const sideApp=bootAtMain({sidePlankReady:true});
+const sideRaw=JSON.parse(sideApp.local.getItem('calicoach.pwa.v3.device'));
+sideRaw.programIndex=1;sideRaw.active=null;sideApp.local.setItem('calicoach.pwa.v3.device',JSON.stringify(sideRaw));
+const sideBoot=boot(sideApp.local);sideBoot.api.startSession();
+const sideActive=JSON.parse(sideApp.local.getItem('calicoach.pwa.v3.device'));
+sideActive.active.index=sideActive.active.steps.findIndex(s=>s.id==='sideleft');sideActive.active.timerEndAt=Date.now()+15000;
+sideApp.local.setItem('calicoach.pwa.v3.device',JSON.stringify(sideActive));
+const sideHard=boot(sideApp.local);click(sideHard,'rate-hard');
+const remainingCore=sideHard.api.getState().data.active.steps.filter((s,i)=>i>=sideHard.api.getState().data.active.index&&s.phase==='main'&&s.pattern==='trunkControl');
+assert(remainingCore.every(s=>s.id==='dead'));
+assert.equal(new Set(remainingCore.map(s=>s.round)).size,remainingCore.length,'Paired side-plank downgrade cannot duplicate core sets');
+
+const walking=boot();walking.api.saveProfile(form('걷기 검증',{area:[]}));
+const legacyActiveStore=new Storage(),legacyActiveFixture=walking.api.getState().data;
+delete legacyActiveFixture.trainingVersion;
+legacyActiveFixture.progress={push:{bonus:2}};legacyActiveFixture.settings.reps={bridge:17};
+legacyActiveFixture.active={plan:'A',rounds:3,index:1,mode:'work',startedAt:Date.now(),feedback:{},steps:[{id:'prep1',phase:'warmup',round:0},{id:'push',phase:'main',round:1},{id:'bridge',phase:'main',round:1},{id:'cool2',phase:'cooldown',round:0}]};
+legacyActiveStore.setItem('calicoach.pwa.v3.device',JSON.stringify(legacyActiveFixture));
+const oldSession=boot(legacyActiveStore).api.getState().data.active;
+assert.equal(oldSession.steps[1].amount,10,'In-progress legacy prescription is preserved');
+assert.equal(oldSession.steps[2].amount,17,'Legacy manual amount is captured in the session snapshot');
+const today=new Date(),todayKey=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+assert.equal(walking.api.saveWalking(todayKey,30,'moderate'),true);
+assert.equal(walking.api.saveWalking(todayKey,40,'moderate'),true);
+assert.equal(walking.api.saveWalking(todayKey,10,'light'),true);
+assert.equal(walking.api.getState().data.activities.length,2);
+assert.equal(walking.api.saveWalking('2024-02-30',20,'moderate'),false);
+assert(walking.root.innerHTML.includes('40<small>/150분'));
+assert.equal(boot(walking.local).api.getState().data.activities.length,2);
+
+async function checkTrainingBackups(){
+  const source=trained.api.getState().data;source.activities=walking.api.getState().data.activities;
+  const imported=boot();
+  await imported.api.handleImport({files:[{size:20000,text:async()=>JSON.stringify({app:'calicoach',version:5,data:source})}]});
+  imported.api.restore();
+  const restored=imported.api.getState().data;
+  assert.equal(restored.workouts[0].feedback[originalMain.key].actual,3);
+  assert.equal(restored.workouts[0].steps.find(s=>s.key===originalMain.key).amount,originalMain.amount);
+  assert.equal(restored.activities.length,2);
+  assert.equal(restored.workouts[0].prescription.slots[0].min,8,'Backup retains the prescribed range');
+  assert.equal(restored.progress.exercises.squat.target,source.progress.exercises.squat.target);
+  const old={...source};delete old.trainingVersion;old.progress={push:{tier:2,bonus:6}};old.settings={...old.settings,rest:25};
+  await imported.api.handleImport({files:[{size:20000,text:async()=>JSON.stringify({app:'calicoach',version:4,data:old})}]});
+  imported.api.restore();
+  assert.equal(imported.api.getState().data.settings.rest,60);
+  assert.equal(Object.keys(imported.api.getState().data.progress).length,0);
+  assert.equal(imported.api.getState().data.legacyProgress.push.tier,2);
+  console.log('PASS training integration: real set input, immediate downgrade, pain, skip, recovery, paired core, walking, v5 round trip and v4 migration');
+}
+checkTrainingBackups().catch(error=>{console.error(error);process.exitCode=1;});
+
+const levelsApp=boot();levelsApp.api.saveProfile(form('수준 검증',{area:[],pushups:'0'}));
+click(levelsApp,'nav',undefined,{value:'settings'});
+for(const label of ['초급','중급','고급'])assert(levelsApp.root.innerHTML.includes(label));
+click(levelsApp,'set-level',undefined,{level:'advanced'});
+assert.equal(levelsApp.api.getState().data.profile.level,'advanced');
+assert(levelsApp.api.planFor('A').items.includes('push'),'Selected level takes priority over old maximum push-up entry');
+assert(levelsApp.api.planFor('A').items.includes('singlebridge'));
+assert.equal(boot(levelsApp.local).api.getState().data.profile.level,'advanced');
+click(levelsApp,'set-level',undefined,{level:'beginner'});
+assert(levelsApp.api.planFor('A').items.includes('wall'));
+assert(!levelsApp.api.planFor('A').items.includes('singlebridge'));
+assert(levelsApp.api.getState().data.progress.level==='beginner');
+assert.equal(levelsApp.api.setTrainingLevel('invalid'),false);
+const changeDuringSession=bootAtMain(),beforeChange=changeDuringSession.api.getState().data.active;
+changeDuringSession.api.setTrainingLevel('advanced');
+assert.equal(JSON.stringify(changeDuringSession.api.getState().data.active.steps),JSON.stringify(beforeChange.steps),'Changing level preserves the current session');
+changeDuringSession.handlers.change({target:{dataset:{actual:'actual'},value:'1'}});
+click(changeDuringSession,'rate-hard');changeDuringSession.api.completeSession();
+assert.equal(changeDuringSession.api.getState().data.profile.level,'advanced');
+assert.equal(Object.keys(changeDuringSession.api.getState().data.progress.exercises).length,0,'Old session feedback cannot overwrite the newly chosen level');
+console.log('PASS level settings: one-tap selection, persistence, preset strength, invalid values and active-session isolation');
+
+const quickStart=boot();quickStart.api.saveProfile(form('간편 시작',{area:[]}));click(quickStart,'start');
+assert.equal(quickStart.api.getState().view,'workout','A recovered user starts with one click');
+assert(!quickStart.root.innerHTML.includes('회복 확인'));
+const reapply=bootAtMain();reapply.api.setTrainingLevel('intermediate');
+reapply.handlers.change({target:{dataset:{actual:'actual'},value:'1'}});click(reapply,'rate-hard');reapply.api.completeSession();
+assert.equal(Object.keys(reapply.api.getState().data.progress.exercises).length,0,'Reapplying the same preset also isolates the older session');
+console.log('PASS simplicity: direct start and same-level preset reapplication');

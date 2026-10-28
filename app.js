@@ -28,22 +28,52 @@
   const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const DEFAULTS = () => ({
     profile:null,
-    settings: {rounds:3, rest:25, longRest:55, sound:true, speech:false, targetWeight:0, reps:{}},
-    weights:[], workouts:[], nextPlan:'A', programIndex:0, progress:{}, active:null
+    trainingVersion:2,trainingRevision:0,
+    settings: {rounds:3, setAdjustment:0, rest:60, longRest:90, sound:true, speech:false, targetWeight:0, reps:{}},
+    weights:[], workouts:[], activities:[], nextPlan:'A', programIndex:0, progress:{}, active:null
   });
   function normalizeData(raw){
     if(!raw || typeof raw!=='object')return DEFAULTS();
     const defaults=DEFAULTS();
     return {
+      trainingVersion:2,
+      trainingRevision:Math.max(0,Math.floor(Number(raw.trainingRevision)||0)),
       profile:raw.profile && typeof raw.profile==='object' ? raw.profile:null,
-      settings:{...defaults.settings,...(raw.settings||{}),reps:raw.settings?.reps||{}},
+      settings:{...defaults.settings,...(raw.settings||{}),rest:raw.trainingVersion===2?num(raw.settings?.rest||60,45,180):60,longRest:raw.trainingVersion===2?num(raw.settings?.longRest||90,60,180):90,setAdjustment:raw.trainingVersion===2?Math.max(-1,Math.min(1,Number(raw.settings?.setAdjustment)||0)):0,reps:{}},
       weights:Array.isArray(raw.weights)?raw.weights:[],
       workouts:Array.isArray(raw.workouts)?raw.workouts:[],
+      activities:Array.isArray(raw.activities)?raw.activities:[],
       nextPlan:['A','B','C'].includes(raw.nextPlan)?raw.nextPlan:'A',
       programIndex:Number.isInteger(raw.programIndex)?raw.programIndex:(raw.nextPlan==='B'?1:0),
-      progress:raw.progress && typeof raw.progress==='object'?raw.progress:{},
-      active:raw.active && typeof raw.active==='object'?raw.active:null
+      progress:normalizeProgress(raw.progress),
+      legacyProgress:(raw.progress&&raw.progress.version!==2&&Object.keys(raw.progress).length)?raw.progress:raw.legacyProgress||{},
+      active:normalizeActive(raw)
     };
+  }
+  function normalizeActive(raw){
+    if(!raw.active||typeof raw.active!=='object')return null;
+    const active=JSON.parse(JSON.stringify(raw.active));
+    if(raw.trainingVersion===2||active.version===2)return active;
+    const moves=window.CalicoachEngine?.MOVES||{};
+    if(Array.isArray(active.steps))for(const s of active.steps){
+      if(Number.isFinite(s.amount))continue;
+      const m=moves[s.id],manual=Number(raw.settings?.reps?.[s.id]);
+      if(manual>0){s.amount=manual;continue;}
+      if(!m){s.amount=60;continue;}
+      let amount=m.amount;
+      if(s.id==='push'&&Number(raw.profile?.pushups)>0)amount=Math.min(amount,Math.max(4,Math.round(Number(raw.profile.pushups)*.7)));
+      const oldCategory=m.category==='scapular'?'pull':m.category==='hipAbduction'?'hinge':m.category;
+      s.amount=Math.min(m.timed?75:24,Math.max(m.timed?15:4,amount+(Number(raw.progress?.[oldCategory]?.bonus)||0)));
+    }
+    active.legacyRest=Number(raw.settings?.rest)||25;active.legacyLongRest=Number(raw.settings?.longRest)||55;
+    return active;
+  }
+  function normalizeProgress(raw){
+    if(!raw||raw.version!==2)return {};
+    const result={version:2,mode:raw.mode==='manual-level'?'manual-level':'legacy-auto',level:['beginner','intermediate','advanced'].includes(raw.level)?raw.level:undefined,exercises:{},choices:{},blocked:{}},patterns=['horizontalPush','kneeDominant','hipExtension','trunkControl','scapularAccessory','hipAbduction'];
+    if(raw.exercises&&typeof raw.exercises==='object'&&!Array.isArray(raw.exercises))for(const [id,s] of Object.entries(raw.exercises).slice(0,100))if(/^[a-z0-9]+$/.test(id)&&s&&typeof s==='object')result.exercises[id]={...(Number.isFinite(s.target)?{target:Math.max(1,Math.min(100,s.target))}:{}),successes:Math.max(0,Math.min(1,Number(s.successes)||0)),hardSessions:Math.max(0,Math.min(100,Number(s.hardSessions)||0)),reduceSets:!!s.reduceSets};
+    for(const pattern of patterns){const id=raw.choices?.[pattern];if(typeof id==='string'&&/^[a-z0-9]+$/.test(id))result.choices[pattern]=id;if(raw.blocked?.[pattern]===true)result.blocked[pattern]=true;}
+    return result;
   }
   function savedProfileValid(p){return p && typeof p.name==='string' && p.name.trim().length>0 && p.name.trim().length<=30 && Number(p.height)>=120 && Number(p.height)<=230;}
   function validLegacyProfile(id){
@@ -79,6 +109,7 @@
   let modal = null;
   let detailExerciseId = null;
   let profileAppliedMessage = false;
+  let trainingLevelMessage='';
   let lastFinished = null;
   let audioContext = null;
   let wakeLock = null;
@@ -133,13 +164,13 @@
     const poster=VideoCatalog[id].poster;
     return `<video class="${small?'exercise-preview-video':'exercise-real-video'}" data-id="${id}" src="${escapeHtml(videoSource(id))}"${poster?` poster="${escapeHtml(poster)}"`:''} muted autoplay loop playsinline preload="metadata" aria-label="${alt} ${escapeHtml(mediaLabel(id))}"></video>`;
   }
-  const stepKey=step=>`${step.phase}:${step.round}:${step.id}`;
+  const stepKey=step=>step.key||`${step.phase}:${step.round}:${step.id}`;
   const PLANS = {
     A:{label:'A 루틴',subtitle:'전신 근력 · 기본기',items:['push','squat','reverse','wraise','dead'],extra:['bridge','plank']},
     B:{label:'B 루틴',subtitle:'근력 + 코어 집중',items:['split','tempo','singlebridge','traise','sideleft','sideright'],extra:['dead','plank']},
     C:{label:'C 루틴',subtitle:'전신 근력 · 변형',items:['push','bridge','squat','wraise','plank'],extra:[]}
   };
-  const PHASES = {warmup:'WARM UP · 준비운동',main:'MAIN SET · 본운동',bonus:'FINISHER · 보강운동',cooldown:'COOL DOWN · 마무리'};
+  const PHASES = {warmup:'준비운동',main:'본운동',bonus:'보강운동',cooldown:'마무리'};
   const icon = (id) => {
     const icons = {
       home:'<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/>',
@@ -153,24 +184,20 @@
     try{localStorage.setItem(DEVICE_KEY,JSON.stringify(data));return true;}
     catch(e){console.warn('저장 공간 사용 실패',e);return false;}
   }
-  function recommendedRounds(profile){return profile?.minutes===20?2:profile?.minutes===45?4:3;}
-  function planFor(plan){
-    return Coach.selectRoutine(data.profile||profileDraft(),plan,data.progress||{});
+  function recommendedRounds(profile){return profile?.minutes===20?2:3;}
+  function planFor(plan,light=false){
+    return Coach.selectRoutine(data.profile||profileDraft(),plan,data.progress||{},{completedSessions:data.workouts.filter(w=>!w.light).length,light,setAdjustment:data.settings.setAdjustment,rest:data.settings.rest,longRest:data.settings.longRest});
   }
   function buildSteps(plan,rounds){
-    const definition=planFor(plan),result=[];
-    ['prep1','prep2','prep3','prep4'].forEach(id=>result.push({id,phase:'warmup',round:0}));
-    for(let r=1;r<=rounds;r++)definition.items.forEach(id=>result.push({id,phase:'main',round:r}));
-    definition.extra.forEach(id=>result.push({id,phase:'bonus',round:0}));
-    ['cool1','cool2'].forEach(id=>result.push({id,phase:'cooldown',round:0}));
-    return result;
+    return Coach.buildSteps(planFor(plan),data.profile,data.progress);
   }
   const currentSteps=()=>data.active?(Array.isArray(data.active.steps)?data.active.steps:buildSteps(data.active.plan,data.active.rounds)):[];
   const currentStep=()=>currentSteps()[data.active?.index||0];
-  const getAmount=id=>{
+  const getAmount=(id,step=null)=>{
+    if(step&&Number.isFinite(step.amount))return step.amount;
+    const activeStep=currentStep();
+    if(data.active&&activeStep?.id===id&&Number.isFinite(activeStep.amount))return activeStep.amount;
     const base=exercise[id].amount;
-    const saved=Number(data.settings.reps[id]);
-    if(Number.isFinite(saved)&&saved>0)return saved;
     const profile=data.profile||{};
     if(/^prep|^cool/.test(id))return base;
     const tuned=Coach.targetAmount(id,profile,data.progress||{});
@@ -193,27 +220,44 @@
     return today.getFullYear()-year-(today.getMonth()+1<month||(today.getMonth()+1===month&&today.getDate()<day)?1:0);
   }
   function formField(label,name,type,value,extra=''){
-    return `<label class="profile-field"><span>${label}</span><input class="textinput" name="${name}" type="${type}" value="${escapeHtml(value??'')}" ${extra} required/></label>`;
+    return `<label class="profile-field${type==='date'?' date-field':''}"><span>${label}</span><input class="textinput" name="${name}" type="${type}" value="${escapeHtml(value??'')}" ${extra} required/></label>`;
+  }
+  function resetLevelProgress(level,previousLevel){
+    if(data.active&&!data.active.level)data.active.level=previousLevel;
+    if(data.active&&data.active.trainingRevision==null)data.active.trainingRevision=data.trainingRevision||0;
+    data.trainingRevision=(data.trainingRevision||0)+1;
+    data.progress={version:2,mode:'manual-level',level,exercises:{},choices:{},blocked:{...(data.progress?.blocked||{})}};
+    data.settings.setAdjustment=0;
+  }
+  function setTrainingLevel(level){
+    if(!data.profile||!['beginner','intermediate','advanced'].includes(level))return false;
+    const previous=structuredClone(data),oldLevel=data.profile.level;
+    resetLevelProgress(level,oldLevel);data.profile.level=level;
+    if(!save()){data=previous;alert('운동 수준을 저장하지 못했습니다.');return false;}
+    trainingLevelMessage='수준을 저장했습니다. '+(data.active?'다음 새 운동부터 적용됩니다.':'');
+    render();return true;
   }
   function renderProfile(){
     const p=data.profile||profileDraft(),first=!savedProfileValid(data.profile);
     const option=(id,value,label)=>`<option value="${value}" ${String(p[id])===String(value)?'selected':''}>${label}</option>`;
-    return `<div class="shell profile-shell">${header()}<div class="pageintro"><div class="eyebrow">PERSONAL TRAINING PROFILE</div><h1>${first?'운동 프로필 만들기':'내 신체정보 수정'}</h1><p class="subheading">입력 정보에 따라 루틴과 반복 횟수를 조정합니다.</p></div>
-      ${first?'<p class="fineprint">처음 한 번만 정보를 입력하면 다음부터는 자동으로 운동 홈이 열립니다. 정보는 이 아이폰에만 저장됩니다.</p>':`<div class="profile-identity"><div class="user-avatar">${escapeHtml(p.name.slice(0,1))}</div><div><b>${escapeHtml(p.name)}</b><small>프로필 수정</small></div></div>`}
+    return `<div class="shell profile-shell">${header()}<div class="pageintro"><h1>${first?'프로필 만들기':'프로필 수정'}</h1></div>
+      ${first?'<p class="fineprint">정보는 이 기기에만 저장됩니다.</p>':`<div class="profile-identity"><div class="user-avatar">${escapeHtml(p.name.slice(0,1))}</div><div><b>${escapeHtml(p.name)}</b><small>프로필 수정</small></div></div>`}
       <form id="profile-form" class="card formbox profile-form">
         <label class="profile-field"><span>이름</span><input class="textinput" name="name" type="text" value="${escapeHtml(p.name)}" placeholder="사용할 이름 입력" autocomplete="name" maxlength="30" required/></label>
         <label class="profile-field"><span>성별 (선택)</span><select class="textinput" name="gender">${option('gender','','선택하지 않음')}${option('gender','남성','남성')}${option('gender','여성','여성')}${option('gender','기타','기타')}</select></label>
         <div class="form-grid">${formField('생년월일','birthdate','date',p.birthdate,'min="1930-01-01" max="'+dateStr()+'"')}${formField('키 (cm)','height','number',p.height,'min="120" max="230" step="0.1"')}${formField('현재 체중 (kg)','weight','number',data.profile?latestWeight():p.weight,'min="30" max="250" step="0.1"')}${formField('목표 체중 (kg)','targetWeight','number',p.targetWeight,'min="30" max="250" step="0.1"')}</div>
-        <label class="profile-field"><span>운동 경험</span><select class="textinput" name="level">${option('level','beginner','입문 · 최근 운동 경험 적음')}${option('level','intermediate','보통 · 기본 맨몸운동 가능')}${option('level','advanced','숙련 · 기본 동작을 쉽게 수행')}</select></label>
-        <label class="profile-field"><span>연속 정자세 푸시업 최대 횟수 (선택)</span><input class="textinput" name="pushups" type="number" min="0" max="100" step="1" placeholder="미측정이면 비워두세요" value="${escapeHtml(p.pushups??'')}"/></label>
+        <label class="profile-field"><span>운동 수준</span><select class="textinput" name="level">${option('level','beginner','초급')}${option('level','intermediate','중급')}${option('level','advanced','고급')}</select></label>
+        <details class="profile-optional"><summary>운동 환경·불편 부위</summary><label class="profile-field"><span>푸시업 최대 횟수 (선택)</span><input class="textinput" name="pushups" type="number" min="0" max="100" step="1" placeholder="미측정이면 비워두세요" value="${escapeHtml(p.pushups??'')}"/></label>
+        <div class="profile-field"><span>운동 환경</span><div class="area-grid">${[['stableChair','벽에 고정한 의자'],['stableSurface','고정된 높은 지지대'],['singleLegReady','스플릿 스쿼트 가능'],['sidePlankReady','사이드 플랭크 가능']].map(([id,label])=>`<label class="check-row"><input type="checkbox" name="${id}" ${p[id]?'checked':''}/>${label}</label>`).join('')}</div><small class="field-description">주 4~5회는 걷기·회복일을 포함합니다.</small></div>
+        <div class="profile-field"><span>불편한 부위 (복수 선택)</span>
+          <div class="area-grid">${Coach.bodyAreas.map(([id,label])=>`<label class="check-row area-chip"><input type="checkbox" name="area" value="${id}" ${Coach.areas(p).has(id)?'checked':''}/>${label}</label>`).join('')}</div>
+          <small class="field-description">선택 부위의 부담을 고려해 조정합니다.</small>
+        </div>
+        </details>
         <div class="form-grid"><label class="profile-field"><span>주당 운동 횟수</span><select class="textinput" name="days">${[2,3,4,5].map(n=>option('days',n,n+'회')).join('')}</select></label>
         <label class="profile-field"><span>1회 운동 시간</span><select class="textinput" name="minutes">${[20,30,45].map(n=>option('minutes',n,n+'분')).join('')}</select></label></div>
         <label class="profile-field"><span>우선 목표</span><select class="textinput" name="focus">${option('focus','loss','체중 감량 중심')}${option('focus','balanced','감량 + 근력 균형')}${option('focus','fitness','근력·체력 향상')}</select></label>
-        <div class="profile-field"><span>운동 시 불편한 부위 (선택 · 복수 선택)</span>
-          <div class="area-grid">${Coach.bodyAreas.map(([id,label])=>`<label class="check-row area-chip"><input type="checkbox" name="area" value="${id}" ${Coach.areas(p).has(id)?'checked':''}/>${label}</label>`).join('')}</div>
-          <small class="field-description">선택 부위의 부담을 줄일 수 있는 대체 동작을 자동 제안합니다. 통증의 원인을 진단하는 기능은 아닙니다.</small>
-        </div>
-        <div class="profile-hint">아래 <b>확인</b>을 눌러야 입력 정보가 저장되고 다음 운동부터 적용됩니다. 매트만 사용하는 맨몸운동을 기본으로 구성합니다. 강도는 운동 경험과 수행 능력으로 결정하며 성별만으로 차등 적용하지 않습니다.</div>
+        <div class="profile-hint">변경 사항은 다음 새 운동부터 적용됩니다.</div>
         <p id="profile-error" class="form-error" role="alert" hidden></p>
         <button class="btn btn-primary btn-full" type="submit">확인</button>
         ${first?'':`<button class="btn btn-ghost btn-full" type="button" data-action="profile-back">취소</button>`}
@@ -222,7 +266,7 @@
   function saveProfile(form){
     const fd=new FormData(form),name=String(fd.get('name')||'').trim(),gender=String(fd.get('gender')||''),birthdate=String(fd.get('birthdate')||''),height=Number(fd.get('height')),weight=Number(fd.get('weight')),targetWeight=Number(fd.get('targetWeight'));
     const level=String(fd.get('level')||''),days=Number(fd.get('days')),minutes=Number(fd.get('minutes')),focus=String(fd.get('focus')||'');
-    const rawPushups=String(fd.get('pushups')||'').trim(),pushups=rawPushups===''?'':Number(rawPushups);
+    const rawPushups=String(fd.get('pushups')??data.profile?.pushups??'').trim(),pushups=rawPushups===''?'':Number(rawPushups);
     const err=document.getElementById('profile-error');
     function fail(msg){if(err){err.hidden=false;err.textContent=msg;}return false;}
     if(!name||name.length>30)return fail('이름은 1~30자로 입력해주세요.');
@@ -233,11 +277,12 @@
     if(pushups!==''&&(!Number.isInteger(pushups)||pushups<0||pushups>100))return fail('푸시업 횟수는 0~100회 사이로 입력해주세요.');
     const wasNew=!savedProfileValid(data.profile),previous=data.profile,initialWeight=wasNew?weight:Number(data.profile.initialWeight||weight);
     const adjustAreas=fd.getAll('area').map(String).filter(id=>Coach.bodyAreas.some(([key])=>key===id));
-    data.profile={name,gender,birthdate,height,weight,targetWeight,initialWeight,level,pushups,days,minutes,focus,adjustAreas,back:adjustAreas.includes('back'),foot:adjustAreas.includes('foot')};
+    data.profile={name,gender,birthdate,height,weight,targetWeight,initialWeight,level,pushups,days,minutes,focus,adjustAreas,back:adjustAreas.includes('back'),foot:adjustAreas.includes('foot'),...Object.fromEntries(['stableChair','stableSurface','singleLegReady','sidePlankReady'].map(id=>[id,fd.has(id)]))};
+    if(!wasNew&&previous.level!==level)resetLevelProgress(level,previous.level);
     data.settings.targetWeight=targetWeight;
     if(wasNew){data.settings.rounds=Coach.selectRoutine(data.profile,'A').rounds;}
     else if(Number(previous.minutes)!==minutes && data.settings.rounds===recommendedRounds(previous))data.settings.rounds=recommendedRounds(data.profile);
-    if(wasNew || previous.focus!==focus){data.settings.rest=focus==='fitness'?40:focus==='loss'?20:25;data.settings.longRest=focus==='fitness'?70:55;}
+    if(wasNew){data.settings.rest=60;data.settings.longRest=90;}
     // 신체정보의 체중 수정은 당일 체중 기록에도 반영됩니다.
     if(wasNew || Math.abs(latestWeight()-weight)>.0001){data.weights=data.weights.filter(w=>w.date!==dateStr());data.weights.push({date:dateStr(),weight});}
     if(!save())return fail('기기 저장소에 저장할 수 없습니다. 브라우저의 저장 공간 및 개인정보 보호 설정을 확인해주세요.');
@@ -251,9 +296,13 @@
     const now = new Date();
     const titleDay = `${now.getMonth()+1}월 ${now.getDate()}일 ${DAY_NAMES[now.getDay()]}요일`;
     const weekly = weeklyWorkouts();
+    const strengthGoal=Math.min(3,Number(data.profile?.days)||3);
+    const schedule=Coach.weeklySchedule(data.profile?.days);
+    const recovery=Coach.recoveryStatus(data.workouts);
+    const walking=weeklyActivities(),moderateMinutes=walking.filter(a=>a.intensity==='moderate').reduce((n,a)=>n+a.minutes,0);
     const thisMonday = weekdayMonday(now);
     const daysDone = new Set(weekly.map(w => dateStr(new Date(w.completedAt))));
-    const week = Array.from({length:7},(_,i)=>{const d=new Date(thisMonday);d.setDate(d.getDate()+i); const day=dateStr(d);return `<div class="weekbox ${daysDone.has(day)?'done':''} ${day===dateStr()?'today':''}"><strong>${['월','화','수','목','금','토','일'][i]}</strong><span class="mark">${daysDone.has(day)?'✓':d.getDate()}</span></div>`;}).join('');
+    const week = Array.from({length:7},(_,i)=>{const d=new Date(thisMonday);d.setDate(d.getDate()+i); const day=dateStr(d);return `<div class="weekbox ${daysDone.has(day)?'done':''} ${day===dateStr()?'today':''}"><strong>${['월','화','수','목','금','토','일'][i]}</strong><span class="mark">${daysDone.has(day)?'✓':d.getDate()}</span><small>${schedule[i]}</small></div>`;}).join('');
     const upcoming=Coach.nextPlan(data.programIndex,data.profile?.days);
     const next = planFor(upcoming);
     const weight = latestWeight();
@@ -262,24 +311,32 @@
     const progress=baseline!==goal?Math.max(0,Math.min(100,Math.abs((baseline-weight)/(baseline-goal))*100)):0;
     const incomplete = !!data.active;
     return `<div class="shell">${header()}
-      ${profileAppliedMessage?'<div class="profile-applied" role="status">✓ 프로필이 저장되었습니다. 다음 운동부터 변경된 정보가 적용됩니다.</div>':''}
-      <div class="eyebrow">YOUR PERSONAL FITNESS PLAN</div>
-      <h1 class="display">오늘도 몸을<br>한 단계 더.</h1>
-      <p class="subheading">${titleDay} · ${escapeHtml(data.profile.name)}님의 맞춤형 운동 코스</p>
-      <button class="mini-profile" data-action="go-profile">${data.profile?.level==='beginner'?'입문':data.profile?.level==='advanced'?'숙련':'보통'} 난이도 · 주 ${data.profile?.days}회 · ${data.profile?.minutes}분 <span>신체정보 수정 ›</span></button>
-      <section class="card hero" aria-label="오늘의 운동"><div class="hero-head"><span class="pill">● ${incomplete?'진행 중인 운동':'오늘의 추천 운동'}</span><span class="softpill">맞춤형 A / B / C</span></div>
-      <h2>${incomplete?PLANS[data.active.plan]?.label||'진행 중':next.label}</h2><p>${incomplete?'중단한 단계부터 이어서 할 수 있어요.':next.subtitle}</p>
-      <div class="hero-icons"><span>◷ ${data.profile?.minutes}분 목표</span><span>◈ ${data.profile?.focus==='loss'?'감량 중심':data.profile?.focus==='fitness'?'근력 중심':'전신 근력'}</span><span>⦿ 매트만 사용</span></div>
+      ${profileAppliedMessage?'<div class="profile-applied" role="status">✓ 프로필 저장 완료</div>':''}
+
+      <h1 class="display">오늘의 운동</h1>
+      <p class="subheading">${titleDay}</p>
+      <button class="mini-profile" data-action="go-profile">${data.profile?.level==='beginner'?'초급':data.profile?.level==='advanced'?'고급':'중급'} 난이도 · 주 ${data.profile?.days}회 · ${data.profile?.minutes}분 <span>신체정보 수정 ›</span></button>
+      <section class="card hero" aria-label="오늘의 운동"><div class="hero-head"><span class="pill">● ${incomplete?'진행 중':'추천'}</span></div>
+      <h2>${incomplete?PLANS[data.active.plan]?.label||'진행 중':next.label}</h2><p>${incomplete?'이어서 진행하세요.':next.subtitle}</p>
+      <div class="hero-icons"><span>◷ 약 ${next.estimatedMinutes}분 · ${data.profile?.minutes}분 목표</span><span>◈ ${next.totalSets}세트</span><span>⦿ 맨몸 기본형</span></div>
       <button class="btn btn-primary btn-full" data-action="${incomplete?'resume':'start'}">${incomplete?'운동 이어하기':'운동 시작하기'} &nbsp;→</button></section>
       <div class="sectionline"><div class="sectiontitle">오늘의 운동 미리보기</div><div class="smallhint">${next.items.length}가지 · ${data.profile?.minutes}분 목표</div></div>
-      <div class="routine-preview">${next.items.map(id=>`<div class="routine-tile">${mediaHtml(id,true)}<div><b>${escapeHtml(exercise[id].title)}</b><small>${getAmount(id)}${exercise[id].unit}</small><button type="button" class="guide-preview-button" data-action="details" data-id="${id}">동작 배우기 ›</button></div></div>`).join('')}</div>
-      <p class="fineprint">GIF는 동작 개념도입니다. 낯선 운동은 ‘동작 배우기’에서 시작 자세와 실제 자세 자료를 먼저 확인하세요. ${next.note}</p>
-      <div class="sectionline"><div class="sectiontitle">이번 주 진행률</div><div class="smallhint">${weekly.length} / ${data.profile?.days||3}회 목표</div></div>
+      <div class="routine-preview">${next.slots.map(s=>`<div class="routine-tile">${mediaHtml(s.id,true)}<div><b>${escapeHtml(exercise[s.id].title)}${s.pair?' · 좌우':''}</b><small>${s.sets}세트 × ${s.amount}${exercise[s.id].unit}</small><button type="button" class="guide-preview-button" data-action="details" data-id="${s.id}">동작 배우기 ›</button></div></div>`).join('')}</div>
+      ${next.missing.length?`<div class="training-alert" role="status">제외: ${next.missing.map(patternLabel).join(', ')}</div>`:''}
+      ${Object.values(data.progress?.blocked||{}).some(Boolean)?'<div class="training-alert">통증 기록으로 일부 운동이 제외됐습니다.<button class="btn btn-outline btn-full" data-action="review-pain">회복 후 다시 평가</button></div>':''}
+      <details class="training-options"><summary>운동 안내</summary><p class="fineprint">등 당기기 부하는 제한적입니다. 통증이 있으면 중단하세요.</p></details>
+      <div class="sectionline"><div class="sectiontitle">이번 주 근력 진행률</div><div class="smallhint">${weekly.filter(w=>!w.light).length} / ${strengthGoal}회 목표</div></div>
       <div class="weeklist">${week}</div>
-      <div class="metrics"><div class="card metric"><div class="metric-label">이번 주 완료</div><div class="metric-value">${weekly.length}<small>회</small></div><div class="track"><div style="width:${Math.min(100,weekly.length/(data.profile?.days||3)*100)}%"></div></div></div><div class="card metric"><div class="metric-label">현재 체중 · 목표 ${goalWeight()}kg</div><div class="metric-value">${weight}<small>kg</small></div><div class="track"><div style="width:${progress}%"></div></div></div></div>
-      <div class="note"><div class="note-icon">✦</div><div><strong>오늘의 코치 노트</strong><p>마지막 2~3회가 어렵게 느껴지는 강도가 목표예요. 통증이 발생하면 동작을 중단하고 강도를 조정하세요.</p></div></div>
+      <p class="fineprint">권장 일정 · 놓친 운동은 다음 순서로 이어가세요.</p>
+      <div class="metrics"><div class="card metric"><div class="metric-label">이번 주 중강도 걷기</div><div class="metric-value">${moderateMinutes}<small>/150분</small></div><div class="track"><div style="width:${Math.min(100,moderateMinutes/150*100)}%"></div></div></div><div class="card metric"><div class="metric-label">현재 체중 · 목표 ${goalWeight()}kg</div><div class="metric-value">${weight}<small>kg</small></div><div class="track"><div style="width:${progress}%"></div></div></div></div>
+      ${!recovery.ready?'<div class="note"><div class="note-icon">✦</div><div><strong>오늘은 회복일</strong><p>걷기나 가벼운 운동을 권합니다.</p></div></div>':''}
+      ${renderWalking(walking)}
     </div>${navigation('home')}`;
   }
+  function patternLabel(id){return {kneeDominant:'무릎 중심 하체',horizontalPush:'상체 밀기',hipExtension:'고관절 폄',trunkControl:'코어',scapularAccessory:'견갑 보조'}[id]||id;}
+  function weeklyActivities(){const monday=weekdayMonday(new Date()),end=new Date(monday);end.setDate(end.getDate()+7);return (data.activities||[]).filter(a=>a&&validRecordDate(a.date)&&new Date(a.date+'T12:00:00')>=monday&&new Date(a.date+'T12:00:00')<end);}
+  function renderWalking(records){return `<section class="card formbox walking-card"><h2>걷기 기록</h2><p class="fineprint">중강도: 대화는 가능하고 노래는 어려운 정도.</p><form id="walking-form" class="training-form"><label class="date-field">날짜<input class="textinput" type="date" name="date" value="${dateStr()}" max="${dateStr()}" required/></label><label>걷기 시간 (분)<input class="textinput" type="number" name="minutes" value="15" min="1" max="300" required/></label><label>강도<select class="textinput" name="intensity"><option value="moderate">중강도 걷기</option><option value="light">가벼운 회복 걷기</option></select></label><button class="btn btn-outline" type="submit">걷기 저장</button></form><p class="fineprint">같은 날짜·강도는 덮어씁니다.</p>${records.map(a=>`<div class="walking-record">${humanDate(a.date)} · ${a.intensity==='moderate'?'중강도':'가벼운 걷기'} ${a.minutes}분<button data-action="delete-walk" data-date="${a.date}" data-intensity="${a.intensity}" aria-label="${a.date} 걷기 기록 삭제">삭제</button></div>`).join('')}</section>`;}
+  function saveWalking(day,minutes,intensity){const value=Number(minutes);if(!validRecordDate(day)||day>dateStr()||!Number.isInteger(value)||value<1||value>300||!['moderate','light'].includes(intensity)){alert('오늘까지의 날짜, 걷기 1~300분과 강도를 확인해주세요.');return false;}const before=data.activities;data.activities=[...(before||[]).filter(a=>!(a.date===day&&a.intensity===intensity)),{date:day,minutes:value,intensity}].sort((a,b)=>a.date.localeCompare(b.date));if(!save()){data.activities=before;alert('걷기 기록을 저장하지 못했습니다.');return false;}render();return true;}
   function validRecordDate(value){
     if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;
     const parsed=new Date(value+'T12:00:00');
@@ -306,7 +363,7 @@
     return data.workouts.filter(item=>item&&!Number.isNaN(new Date(item.completedAt).valueOf())&&dateStr(new Date(item.completedAt)).startsWith(month+'-')).sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt));
   }
   function chartHtml(records=weightRecords()) {
-    if(records.length<2) return `<div class="empty">체중을 두 번 이상 기록하면 추이 그래프가 나타납니다.</div>`;
+    if(records.length<2) return `<div class="empty">기록 2개부터 그래프를 표시합니다.</div>`;
     const values=records.map(r=>r.weight), min=Math.floor(Math.min(...values)-1),max=Math.ceil(Math.max(...values)+1), span=(max-min)||1;
     const dates=records.map(r=>new Date(r.date+'T12:00:00').valueOf()),daysSpan=dates.at(-1)-dates[0]||1;
     const xy=values.map((v,i)=>[22+(dates[i]-dates[0])/daysSpan*316, 125-(v-min)/span*99]);
@@ -325,40 +382,47 @@
       cells.push(`<button class="calendar-day ${count?'done':''} ${day===dateStr()?'today':''} ${day===historyDay?'selected':''}" data-action="history-day" data-date="${day}" aria-pressed="${day===historyDay}" aria-label="${month}월 ${number}일, 운동 ${count}회"><span>${number}</span><small>${count?`${count}회`:'·'}</small></button>`);
     }
     const shown=historyDay?(byDay.get(historyDay)||[]):records;
-    return `<div class="shell">${header()}<div class="pageintro"><div class="eyebrow">MONTHLY TRAINING</div><h1>월별 운동 기록.</h1><p class="subheading">운동한 날과 완료한 루틴을 한눈에 확인하세요.</p></div>
+    return `<div class="shell">${header()}<div class="pageintro"><h1>운동 기록</h1></div>
       ${monthControl('history',historyMonth)}
       <div class="monthly-metrics"><div class="card metric"><div class="metric-label">완료한 운동</div><div class="metric-value">${records.length}<small>회</small></div></div><div class="card metric"><div class="metric-label">운동한 날</div><div class="metric-value">${byDay.size}<small>일</small></div></div><div class="card metric"><div class="metric-label">총 운동 시간</div><div class="metric-value">${Math.round(totalMinutes)}<small>분</small></div></div></div>
-      <section class="card calendar" aria-label="${year}년 ${month}월 운동 달력"><div class="calendar-grid calendar-weekdays">${DAY_NAMES.map(name=>`<span>${name}</span>`).join('')}</div><div class="calendar-grid">${cells.join('')}</div><p class="fineprint">날짜를 누르면 그날의 운동 기록을 볼 수 있습니다.</p></section>
+      <section class="card calendar" aria-label="${year}년 ${month}월 운동 달력"><div class="calendar-grid calendar-weekdays">${DAY_NAMES.map(name=>`<span>${name}</span>`).join('')}</div><div class="calendar-grid">${cells.join('')}</div><p class="fineprint">날짜를 눌러 기록 보기</p></section>
       <div class="sectionline"><div class="sectiontitle">${historyDay?humanDate(historyDay):`${month}월 전체`} 기록</div>${historyDay?'<button class="month-today" data-action="history-all">전체 보기</button>':`<div class="smallhint">${year}년</div>`}</div>
       <div class="card recordcard">${shown.length?shown.map(item=>`<div class="recorditem"><div><div class="date">${humanDate(dateStr(new Date(item.completedAt)))}</div><div class="main">${escapeHtml(PLANS[item.plan]?.label||'운동 루틴')}</div>${Number.isFinite(item.totalSteps)&&item.totalSteps>0?`<div class="smallhint">진행 ${Number(item.stepsCompleted)||0} / ${item.totalSteps}단계</div>`:''}</div><div class="mins">${Math.round(Number(item.minutes)||0)}분 · 완료</div></div>`).join(''):`<div class="empty">${historyDay?'이 날짜에는':'이 달에는'} 완료한 운동이 없습니다.</div>`}</div>
-      <p class="fineprint">완료한 루틴을 기준으로 표시합니다. 진행 중인 운동은 완료 후 기록됩니다. 기록은 이 기기에 저장되며 설정에서 백업할 수 있습니다.</p></div>${navigation('history')}`;
+      ${shown.map(trainingRecordHtml).join('')}
+      </div>${navigation('history')}`;
+  }
+  function trainingRecordHtml(item){
+    if(!Array.isArray(item.steps)||!item.feedback)return '';
+    const votes={easy:'4회 이상 여유',ok:'2~3회 여유 / 자세 유지',hard:'수행 한계',pain:'통증·중단',unrated:'여유 미평가'};
+    return `<details class="card training-record"><summary>${humanDate(dateStr(new Date(item.completedAt)))} ${escapeHtml(item.plan)} · ${item.light?'가벼운 운동 · ':''}세트 기록 보기</summary>${item.steps.filter(s=>s.phase==='main'&&exercise[s.id]).map(s=>{const r=item.feedback[stepKey(s)],actualId=exercise[r?.id]?r.id:s.id;return `<div class="set-record"><b>${escapeHtml(exercise[actualId].title)} · ${s.round}세트</b><small>${!r?'수행 기록 없음':r.status==='skipped'?'건너뜀':`목표 ${r.target??s.amount??'—'}${exercise[actualId].unit} → 실제 ${r.left!=null?`좌 ${r.left} / 우 ${r.right}`:r.actual??'—'}${exercise[actualId].unit} · ${votes[r.vote]||'여유 미평가'}`}</small></div>`;}).join('')}</details>`;
   }
   function renderWeight(){
     const changes=weightChanges(),records=changes.filter(item=>item.date.startsWith(weightMonth+'-'));
     const latest=changes.at(-1),baseline=changes[0],monthChange=records.length>1?records.at(-1).weight-records[0].weight:null;
-    return `<div class="shell">${header()}<div class="pageintro"><div class="eyebrow">WEIGHT JOURNAL</div><h1>날짜별 체중 변화.</h1><p class="subheading">측정한 날짜에 체중을 기록하고 변화를 확인하세요.</p></div>
+    return `<div class="shell">${header()}<div class="pageintro"><h1>체중 기록</h1></div>
       ${weightMessage?`<div class="profile-applied" role="status">${escapeHtml(weightMessage)}</div>`:''}
       <div class="card formbox"><div class="row-between"><div><div class="metric-label">최근 체중${latest?' · '+humanDate(latest.date):''}</div><div class="metric-value">${latest?.weight??latestWeight()}<small>kg</small></div></div><span class="pill">목표 ${goalWeight()}kg</span></div>
-      <form id="weight-form" class="weight-form"><label class="profile-field"><span>측정 날짜</span><input class="textinput" name="date" type="date" value="${dateStr()}" max="${dateStr()}" required/></label><label class="profile-field"><span>체중 (kg)</span><input name="weight" class="textinput" inputmode="decimal" type="number" min="30" max="250" step="0.1" value="${latest?.weight??latestWeight()}" required/></label><button class="btn btn-primary btn-full" type="submit">체중 저장</button></form><p class="fineprint">같은 날짜에 저장하면 해당 날짜의 체중을 수정합니다.</p></div>
+      <form id="weight-form" class="weight-form"><label class="profile-field date-field"><span>측정 날짜</span><input class="textinput" name="date" type="date" value="${dateStr()}" max="${dateStr()}" required/></label><label class="profile-field"><span>체중 (kg)</span><input name="weight" class="textinput" inputmode="decimal" type="number" min="30" max="250" step="0.1" value="${latest?.weight??latestWeight()}" required/></label><button class="btn btn-primary btn-full" type="submit">체중 저장</button></form><p class="fineprint">같은 날짜는 덮어씁니다.</p></div>
       ${monthControl('weight',weightMonth)}
       <div class="metrics"><div class="card metric"><div class="metric-label">이 달 첫 측정 대비</div><div class="metric-value">${monthChange===null?'—':signed(monthChange,1)}<small>kg</small></div></div><div class="card metric"><div class="metric-label">최초 기록 대비 · 최근 체중</div><div class="metric-value">${latest?signed(latest.totalRate):'—'}<small>%</small></div></div></div>
       <div class="card formbox">${chartHtml(records)}</div>
       <div class="sectionline"><div class="sectiontitle">날짜별 변동률</div><div class="smallhint">${records.length}개 기록</div></div>
       <div class="card weight-table-wrap"><table class="weight-table"><thead><tr><th scope="col">날짜</th><th scope="col">체중</th><th scope="col">직전 측정 대비</th><th scope="col">최초 대비</th></tr></thead><tbody>${records.length?[...records].reverse().map(item=>`<tr><th scope="row">${item.date}</th><td>${item.weight.toFixed(1)}kg</td><td>${item.rate===null?'—':`${signed(item.rate)}%<small>${signed(item.delta,1)}kg</small>`}</td><td>${signed(item.totalRate)}%</td></tr>`).join(''):'<tr><td colspan="4" class="empty">이 달에는 체중 기록이 없습니다.</td></tr>'}</tbody></table></div>
-      <p class="fineprint">직전 측정 대비 = (현재 체중 − 이전 측정 체중) ÷ 이전 측정 체중 × 100. 측정하지 않은 날짜는 건너뜁니다.${baseline?` 최초 기준은 ${baseline.date}의 ${baseline.weight.toFixed(1)}kg입니다.`:''} +는 증가, −는 감소를 뜻합니다.</p></div>${navigation('weight')}`;
+      <details class="training-options"><summary>변화율 기준</summary><p class="fineprint">직전 대비: 이전 측정값과 비교.${baseline?` 최초 대비: ${baseline.date}의 ${baseline.weight.toFixed(1)}kg과 비교.`:''} + 증가 · − 감소</p></details></div>${navigation('weight')}`;
   }
   function settingRow({name,desc,action,key,min,max,step=1,value,unit=''}) {
-    return `<div class="settings-row"><div><strong>${name}</strong><p>${desc}</p></div><div class="numberstep"><button class="stepbtn" data-action="setting-step" data-key="${key}" data-delta="-${step}" ${value<=min?'disabled':''}>−</button><span class="stepvalue">${value}${unit}</span><button class="stepbtn" data-action="setting-step" data-key="${key}" data-delta="${step}" ${value>=max?'disabled':''}>+</button></div></div>`;
+    return `<div class="settings-row"><div><strong>${name}</strong>${desc?`<p>${desc}</p>`:''}</div><div class="numberstep"><button class="stepbtn" data-action="setting-step" data-key="${key}" data-delta="-${step}" ${value<=min?'disabled':''}>−</button><span class="stepvalue">${value}${unit}</span><button class="stepbtn" data-action="setting-step" data-key="${key}" data-delta="${step}" ${value>=max?'disabled':''}>+</button></div></div>`;
   }
   function renderSettings(){const s=data.settings;
-    return `<div class="shell">${header()}<div class="pageintro"><div class="eyebrow">MAKE IT YOURS</div><h1>나만의 운동 설정.</h1><p class="subheading">최소한의 조작으로 내 몸에 맞게.</p></div>
-    <div class="sectionline"><div class="sectiontitle">운동 강도</div></div><div class="card formbox">${settingRow({name:'본운동 라운드',desc:'처음에는 2라운드, 익숙해지면 3라운드',key:'rounds',min:1,max:4,value:s.rounds})}${settingRow({name:'운동 사이 휴식',desc:'일반 동작 완료 후 휴식 시간',key:'rest',min:10,max:90,step:5,value:s.rest,unit:'초'})}${settingRow({name:'라운드 사이 휴식',desc:'다음 라운드가 시작될 때',key:'longRest',min:20,max:150,step:5,value:s.longRest,unit:'초'})}</div>
-    <div class="sectionline"><div class="sectiontitle">알림</div></div><div class="card formbox"><div class="settings-row"><div><strong>효과음</strong><p>타이머 종료와 단계 전환 시 소리 재생 시도</p></div><input class="toggle" type="checkbox" data-setting="sound" aria-label="효과음" ${s.sound?'checked':''}/></div><div class="settings-row"><div><strong>한국어 음성 안내</strong><p>지원되는 브라우저에서 다음 동작 읽기</p></div><input class="toggle" type="checkbox" data-setting="speech" aria-label="음성 안내" ${s.speech?'checked':''}/></div></div>
-    <p class="setting-help">아이폰의 절전·화면 잠금·브라우저 정책에 따라 소리나 자동 안내가 재생되지 않을 수 있습니다. 운동 중에는 앱을 화면에 유지하세요. 아이폰 PWA에서는 진동이 지원되지 않을 수 있어 기능에서 제외했습니다.</p>
+    return `<div class="shell">${header()}<div class="pageintro"><h1>설정</h1></div>
+    <div class="sectionline"><div class="sectiontitle">운동 수준</div></div><section class="card formbox"><div class="level-picker" role="group" aria-label="운동 수준 선택">${[['beginner','초급'],['intermediate','중급'],['advanced','고급']].map(([level,label])=>`<button class="level-option" type="button" data-action="set-level" data-level="${level}" aria-pressed="${Coach.trainingLevel(data.profile)===level}">${label}</button>`).join('')}</div><p class="setting-help">${{beginner:'기초 동작 · 적은 운동량',intermediate:'무릎 푸시업 · 기본 근력',advanced:'일반 푸시업 · 한발 브리지'}[Coach.trainingLevel(data.profile)]}</p>${trainingLevelMessage?`<p class="profile-applied" role="status">${trainingLevelMessage}</p>`:''}</section>
+    <details class="card formbox training-options"><summary>세트·휴식 설정</summary>${settingRow({name:'운동별 세트 조절',desc:'운동별 세트 가감',key:'setAdjustment',min:-1,max:1,value:s.setAdjustment||0})}${settingRow({name:'운동 사이 휴식',desc:'',key:'rest',min:45,max:180,step:15,value:s.rest,unit:'초'})}${settingRow({name:'같은 운동 연속 휴식',desc:'같은 종목을 이어 할 때',key:'longRest',min:60,max:180,step:15,value:s.longRest,unit:'초'})}</details>
+    <div class="sectionline"><div class="sectiontitle">알림</div></div><div class="card formbox"><div class="settings-row"><div><strong>효과음</strong><p>단계 전환 알림</p></div><input class="toggle" type="checkbox" data-setting="sound" aria-label="효과음" ${s.sound?'checked':''}/></div><div class="settings-row"><div><strong>한국어 음성 안내</strong><p>다음 동작 읽기</p></div><input class="toggle" type="checkbox" data-setting="speech" aria-label="음성 안내" ${s.speech?'checked':''}/></div></div>
+    <p class="setting-help">소리·음성은 기기 설정에 따라 제한될 수 있습니다.</p>
     <div class="sectionline"><div class="sectiontitle">내 신체정보</div></div><div class="card formbox"><div class="settings-row"><div><strong>${escapeHtml(data.profile?.name||'')} ${data.profile?.gender?'· '+escapeHtml(data.profile.gender):''}</strong><p>만 ${profileAge(data.profile?.birthdate)}세 · 키 ${data.profile?.height}cm · 목표 체중 ${goalWeight()}kg</p></div><button class="btn btn-outline" data-action="go-profile">수정</button></div></div>
-        <div class="sectionline"><div class="sectiontitle">내 데이터</div></div><div class="card formbox"><button class="btn btn-outline btn-full" data-action="export">↓ 운동 기록 JSON 백업</button><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="import">↑ 백업 복원</button><input type="file" accept="application/json,.json" id="backup-file" class="hidden"/><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="records-reset-confirm">기록·설정 초기화</button><p class="fineprint">프로필·신체정보는 유지하고 운동·체중 기록과 운동 설정을 초기화합니다.</p><button class="btn btn-ghost btn-full" data-action="reset-confirm">프로필 포함 전체 초기화</button><p class="fineprint">프로필을 포함한 이 기기의 모든 저장 정보를 삭제합니다.</p></div>
-    ${localStorage.getItem(LEGACY_KEY)?'<div class="card formbox"><strong>이전 버전 기록 가져오기</strong><p class="setting-help">이 기기에 v1.0 기록이 남아 있다면 가져올 수 있습니다. 현재 기록을 대체하므로 먼저 JSON 백업하세요.</p><button class="btn btn-outline btn-full" data-action="migrate-legacy-confirm">v1.0 기록 가져오기</button></div>':''}
-    <p class="fineprint">칼리코치 v1.4 · 로그인 없이 이 기기의 프로필을 자동으로 불러옵니다. 기록은 다른 아이폰과 동기화되지 않습니다. 공용 기기에서 사용하지 마세요.</p></div>${navigation('settings')}`;
+        <div class="sectionline"><div class="sectiontitle">내 데이터</div></div><div class="card formbox"><button class="btn btn-outline btn-full" data-action="export">↓ 데이터 백업</button><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="import">↑ 백업 복원</button><input type="file" accept="application/json,.json" id="backup-file" class="hidden"/><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="records-reset-confirm">기록·설정 초기화</button><p class="fineprint">프로필 유지 · 기록과 설정 초기화</p><button class="btn btn-ghost btn-full" data-action="reset-confirm">프로필 포함 전체 초기화</button><p class="fineprint">프로필 포함 모두 삭제</p></div>
+    ${localStorage.getItem(LEGACY_KEY)?'<div class="card formbox"><strong>이전 버전 기록 가져오기</strong><p class="setting-help">현재 기록을 교체합니다. 먼저 백업하세요.</p><button class="btn btn-outline btn-full" data-action="migrate-legacy-confirm">v1.0 기록 가져오기</button></div>':''}
+    <p class="fineprint">기록은 이 기기에만 저장됩니다.</p></div>${navigation('settings')}`;
   }
   const targetText = (step,amount,seconds) => exercise[step.id].type==='timed' ? `${seconds}` : `${amount}`;
   const remainingTime = (active) => Math.max(0,Math.ceil(((active.timerEndAt || Date.now())-Date.now())/1000));
@@ -374,44 +438,47 @@
     const controls = `<div class="action-secondary"><button data-action="prev" ${active.index===0?'disabled':''}>← 이전</button><button data-action="pause">${paused?'▶ 재개':'Ⅱ 일시정지'}</button><button data-action="${rest?'skip-rest':'skip-step'}">${rest?'휴식 건너뛰기':'이 동작 건너뛰기'} →</button></div>`;
     return `<div class="workout"><header class="workout-header"><div class="workout-brand">CALI<span class="brand-dot">.</span>COACH / ${active.plan}</div><button class="quit" data-action="quit-confirm">운동 종료 ×</button></header>
       <div class="progress-rail"><div style="width:${progress}%"></div></div>
-      ${rest ? `<div class="reststage"><div class="eyebrow">RECOVER & RESET</div><h1 class="exercise-title">잠깐 숨 고르기</h1><div class="restbubble" style="margin-top:36px"><div class="restnumber" data-countdown>${displayTime}</div><div class="restsmall">초 후 다음 운동</div></div><div class="restnext">다음 동작<strong>${escapeHtml(e.title)}</strong></div><button type="button" class="guide-rest-button" data-action="details" data-id="${step.id}">다음 동작 미리 배우기 ›</button></div><div class="action-area"><button class="btn btn-primary btn-full" data-action="skip-rest">바로 다음 운동 →</button>${controls}</div>`:
+      ${active.notice?`<p class="training-alert" role="status">${escapeHtml(active.notice)}</p>`:''}
+      ${rest ? `<div class="reststage"><h1 class="exercise-title">잠깐 숨 고르기</h1><div class="restbubble" style="margin-top:36px"><div class="restnumber" data-countdown>${displayTime}</div><div class="restsmall">초 후 다음 운동</div></div><div class="restnext">다음 동작<strong>${escapeHtml(e.title)}</strong></div><button type="button" class="guide-rest-button" data-action="details" data-id="${step.id}">다음 동작 미리 배우기 ›</button></div><div class="action-area"><button class="btn btn-primary btn-full" data-action="skip-rest">바로 다음 운동 →</button>${controls}</div>`:
       `<main class="workout-stage"><div class="stage-line"><span class="phasepill">${PHASES[step.phase]}</span><span class="stage-count">${active.index+1} / ${steps.length}</span></div>
-        <h1 class="exercise-title">${escapeHtml(e.title)}</h1><p class="exercise-subtitle">${step.phase==='main'?`${step.round} / ${active.rounds} 라운드 · `:''}${escapeHtml(e.range || (e.type==='timed'?'시간 운동':'정확한 자세로 수행'))}</p>
-        <div class="exercise-figure">${mediaHtml(step.id)}<div class="figure-number">${videoSource(step.id)?escapeHtml(mediaLabel(step.id)):'간략 동작 개념도'} · ${step.phase.toUpperCase()}</div></div>
-        <div class="targetcenter"><div><span class="target-value" ${e.type==='timed'?'data-countdown':''}>${e.type==='timed'?displayTime:getAmount(step.id)}</span><span class="target-unit">${e.unit}</span></div><div class="target-help">${e.type==='timed'?(paused?'일시정지됨':'시간이 끝나면 자동으로 넘어갑니다'):(e.each?'왼쪽·오른쪽 각각 수행하세요':'완료 후 아래 버튼을 누르세요')}</div>
-          ${e.type==='reps'?`<div class="target-adjust"><button class="miniadjust" data-action="rep-minus" aria-label="횟수 줄이기">−</button><small>오늘의 목표 횟수 조절</small><button class="miniadjust" data-action="rep-plus" aria-label="횟수 늘리기">+</button></div>`:''}</div>
+        <h1 class="exercise-title">${escapeHtml(e.title)}</h1>${step.phase==='main'?`<p class="exercise-subtitle">${step.round} / ${step.totalSets||active.rounds} 세트${step.min&&getAmount(step.id)<step.min?' · 목표 낮춤':''}</p>`:step.practice?'<p class="exercise-subtitle">연습</p>':''}
+        <div class="exercise-figure">${mediaHtml(step.id)}<div class="figure-number">${videoSource(step.id)?escapeHtml(mediaLabel(step.id)):'간략 동작 개념도'}</div></div>
+        <div class="targetcenter"><div><span class="target-value" ${e.type==='timed'?'data-countdown':''}>${e.type==='timed'?displayTime:getAmount(step.id)}</span><span class="target-unit">${e.unit}</span></div><div class="target-help">${e.type==='timed'?(paused?'일시정지':'종료 후 자동 전환'):(e.each?'좌우 각각':'')}</div>
+          ${e.type==='reps'?`<div class="target-adjust"><button class="miniadjust" data-action="rep-minus" aria-label="횟수 줄이기">−</button><small>목표 횟수</small><button class="miniadjust" data-action="rep-plus" aria-label="횟수 늘리기">+</button></div>`:''}</div>
+        ${step.phase==='main'&&e.type==='reps'?`<details class="set-details"><summary>실제 횟수 수정</summary><div class="actual-inputs">${(e.each?['left','right']:['actual']).map(side=>`<label>${side==='left'?'왼쪽 실제 횟수':side==='right'?'오른쪽 실제 횟수':'실제 수행 횟수'}<input class="textinput" type="number" min="0" max="100" step="1" data-actual="${side}" aria-label="${side==='actual'?'실제 수행 횟수':side==='left'?'왼쪽 실제 횟수':'오른쪽 실제 횟수'}" value="${active.draft?.[side]??getAmount(step.id)}" ${paused?'disabled':''}/></label>`).join('')}</div></details>`:''}
         <div class="tipbox"><span>✦</span><p>${escapeHtml(e.cue)} <button data-action="details" data-id="${step.id}" style="background:none;border:0;color:var(--accent);padding:0 0 0 3px;font-size:12px;font-weight:850">동작 배우기 ›</button></p></div>
-        </main><div class="action-area"><button class="btn btn-primary btn-full" data-action="done" ${paused?'disabled':''}>${e.type==='timed'?'완료하고 다음으로 →':'했어요! 다음 동작 →'}</button>
-        ${step.phase==='main'&&!paused?'<div class="rating-options"><button data-action="rate-easy">너무 쉬웠어요</button><button data-action="rate-hard">너무 어려웠어요</button></div>':''}${controls}</div>`}
+        </main><div class="action-area"><button class="btn btn-primary btn-full" data-action="done" ${paused?'disabled':''}>${step.phase==='main'?'완료 →':'다음 →'}</button>
+        ${step.phase==='main'&&!paused?'<div class="rating-options"><button data-action="rate-easy">쉬웠어요</button><button data-action="rate-hard">어려웠어요</button></div><button class="pain-button" data-action="rate-pain">통증 · 중단</button>':''}${controls}</div>`}
     </div>`;
   }
   function renderFinish(){const h=lastFinished;
-    return `<div class="workout"><div class="finished"><div class="finish-icon">✓</div><div class="eyebrow">WORKOUT COMPLETE</div><h1>오늘도 해냈어요.</h1><p>${escapeHtml(PLANS[h?.plan]?.label||'운동')} 완료! 한 번의 운동이 쌓였습니다.</p><div class="finishmetrics"><div><b>${h?.minutes ?? 0}</b><span>운동 시간 (분)</span></div><div><b>${h?.stepsCompleted ?? 0}</b><span>완료한 단계</span></div></div><div class="note" style="text-align:left"><div class="note-icon">✦</div><div><strong>내일의 몸 상태를 확인하세요.</strong><p>통증이 악화되지 않는다면 다음 운동도 계획대로 진행하면 됩니다. 충분히 쉬고, 수분과 단백질을 챙겨 주세요.</p></div></div></div><button class="btn btn-primary btn-full" data-action="finish-home">홈으로 돌아가기 →</button></div>`;
+    return `<div class="workout"><div class="finished"><div class="finish-icon">✓</div><h1>오늘도 해냈어요.</h1><p>${escapeHtml(PLANS[h?.plan]?.label||'운동')} 완료</p><div class="finishmetrics"><div><b>${h?.minutes ?? 0}</b><span>운동 시간 (분)</span></div><div><b>${h?.stepsCompleted ?? 0}</b><span>완료한 단계</span></div></div><div class="note" style="text-align:left"><div class="note-icon">✦</div><div><strong>내일의 몸 상태를 확인하세요.</strong><p>다음 근력운동 전 하루 쉬세요. 피로가 남으면 더 쉬세요.</p></div></div></div><button class="btn btn-primary btn-full" data-action="finish-home">홈으로 돌아가기 →</button></div>`;
   }
   function modalHtml() {
     if(!modal)return '';
+    if(modal==='readiness'){const ready=Coach.recoveryStatus(data.workouts).ready;return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="readiness-title"><h2 id="readiness-title">회복 확인</h2><p>${ready?'피로가 남았다면 가볍게 진행하세요.':'오늘은 가벼운 운동이나 걷기를 권합니다.'}</p><div class="readiness-actions">${ready?'<button class="btn btn-primary btn-full" data-action="start-ready">회복 양호 · 기본 운동</button>':''}<button class="btn btn-outline btn-full" data-action="start-light">가볍게 · 각 1세트</button><button class="btn btn-outline btn-full" data-action="walk-today">오늘은 걷기·회복</button><button class="btn btn-ghost btn-full" data-action="close-modal">닫기</button></div></section></div>`;}
     if(modal==='details' && detailExerciseId && exercise[detailExerciseId]) {
       const id=detailExerciseId, detail=exercise[id], guide=Guides[id], ref=guide?.reference;
       return `<div class="modal-backdrop"><section class="modal guide-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(detail.title)} 동작 배우기">
         <div class="guide-header"><h2>${escapeHtml(detail.title)} · 동작 배우기</h2><button class="guide-close" data-action="close-modal" aria-label="닫기">×</button></div>
-        <p class="guide-media-label">${videoSource(id)?`${escapeHtml(mediaLabel(id))} · 음소거 자동 반복`:'개념 애니메이션 · 아래에서 실제 영상 후보를 확인하세요'}</p>${mediaHtml(id)}
+        <p class="guide-media-label">${videoSource(id)?`${escapeHtml(mediaLabel(id))} · 음소거 자동 반복`:'동작 개념도'}</p>${mediaHtml(id)}
         ${VideoCatalog[id]?.display_note?`<p class="guide-reference-note">${escapeHtml(VideoCatalog[id].display_note)}</p>`:''}
-        ${videoSource(id)?`<div class="video-controls"><button type="button" data-action="video-speed" data-speed="0.5">0.5배속</button><button type="button" data-action="video-speed" data-speed="1">1배속</button><span>영상을 눌러 일시정지/재생</span></div>`:''}
+        ${videoSource(id)?`<div class="video-controls"><button type="button" data-action="video-speed" data-speed="0.5">0.5배속</button><button type="button" data-action="video-speed" data-speed="1">1배속</button><span>탭: 재생·정지</span></div>`:''}
         ${videoSource(id)?`<a class="guide-reference" href="${escapeHtml(VideoCatalog[id].url)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(VideoCatalog[id].provider||'Pexels')} 원본 영상 <small>${escapeHtml(VideoCatalog[id].creator)} · ${escapeHtml(VideoCatalog[id].license)}</small></a>${VideoCatalog[id].license_url?`<a class="guide-reference" href="${escapeHtml(VideoCatalog[id].license_url)}" target="_blank" rel="noopener noreferrer">영상 이용 조건</a>`:''}`:''}
         <div class="guide-steps">
           ${[['01','시작 자세',guide?.start||detail.cue],['02','동작 수행',guide?.move||detail.cue],['03','자세 확인',guide?.check||detail.tips[0]]].map(([n,title,desc])=>`<div class="guide-step"><span class="guide-step-n">${n}</span><div><b>${title}</b><p>${escapeHtml(desc||'')}</p></div></div>`).join('')}
         </div>
         ${!videoSource(id) && SourceCandidates[id] ? `<a class="guide-reference" href="${escapeHtml(SourceCandidates[id].url)}" target="_blank" rel="noopener noreferrer">↗ 실제 사람이 시연하는 영상 후보 보기 <small>Pexels · 운동 일치 여부는 직접 확인해야 함</small></a>` : ''}
-        ${ref ? `<a class="guide-reference" href="${escapeHtml(ref.url)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(ref.label)} 열기 <small>외부 교육 페이지 · 인터넷 필요</small></a>` : videoSource(id) ? '' : `<div class="guide-reference-note">이 동작의 검증된 실제 시연 링크는 아직 준비 중입니다. 설명을 익히고 어렵다면 건너뛰거나 더 쉬운 동작을 선택하세요.</div>`}
-        <div class="alert">통증이 발생하면 동작을 중단하고 강도를 조정하세요.</div>
-        <button class="btn btn-primary btn-full" data-action="close-modal">확인 · 운동으로 돌아가기</button>
+        ${ref ? `<a class="guide-reference" href="${escapeHtml(ref.url)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(ref.label)} 열기 <small>외부 교육 페이지 · 인터넷 필요</small></a>` : videoSource(id) ? '' : `<div class="guide-reference-note">시연 자료 준비 중 · 어려우면 건너뛰세요.</div>`}
+        <div class="alert">통증이 있으면 중단하세요.</div>
+        <button class="btn btn-primary btn-full" data-action="close-modal">운동으로 돌아가기</button>
       </section></div>`;
     }
-    if(modal==='quit')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>운동을 종료할까요?</h2><p>지금 종료하면 이번 회차는 완료 기록에 포함되지 않습니다. 앱을 닫아도 진행 상태는 남아 있습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">계속 운동</button><button class="btn btn-primary" data-action="quit">종료</button></div></section></div>`;
-    if(modal==='records-reset')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="records-reset-title"><h2 id="records-reset-title">기록과 운동 설정을 초기화할까요?</h2><p>프로필·신체정보는 유지합니다. 운동·체중 기록, 운동 설정, 난이도 진행도와 진행 중인 운동을 초기화합니다. 현재 프로필 체중은 오늘의 시작 기록으로 남깁니다.</p><p class="alert">기존 기록은 되돌릴 수 없습니다. 필요한 경우 취소 후 JSON으로 백업하세요.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-danger" data-action="records-reset">확인 · 기록 초기화</button></div></section></div>`;
-    if(modal==='reset')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="reset-title"><h2 id="reset-title">모든 정보를 완전히 초기화할까요?</h2><p>이 기기의 프로필·신체정보·운동 기록·체중 기록·설정·진행 중인 운동과 이전 버전 저장 정보를 모두 삭제합니다. 삭제 후에는 처음부터 프로필을 입력해야 합니다.</p><p class="alert">삭제한 정보는 되돌릴 수 없습니다. 필요한 기록은 취소 후 설정에서 JSON으로 백업하세요.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-danger" data-action="reset">확인 · 전체 초기화</button></div></section></div>`;
-    if(modal==='legacy')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>v1.0 기록 가져오기</h2><p>현재 운동·체중 기록을 이전 버전의 데이터로 교체합니다. 먼저 백업하세요. 이전 원본은 그대로 남습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="migrate-legacy">가져오기</button></div></section></div>`;
-    if(modal==='import')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>백업을 복원할까요?</h2><p>현재 기기의 기록을 선택한 백업 파일로 덮어씁니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="import-confirm">복원</button></div></section></div>`;
+    if(modal==='quit')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>운동을 종료할까요?</h2><p>이번 운동은 완료 기록에 남지 않습니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">계속 운동</button><button class="btn btn-primary" data-action="quit">종료</button></div></section></div>`;
+    if(modal==='records-reset')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="records-reset-title"><h2 id="records-reset-title">기록과 운동 설정을 초기화할까요?</h2><p>프로필은 유지하고 기록·설정·진행 정보를 초기화합니다. 현재 체중은 오늘 기록으로 남습니다.</p><p class="alert">복구할 수 없습니다. 필요한 기록은 먼저 백업하세요.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-danger" data-action="records-reset">확인 · 기록 초기화</button></div></section></div>`;
+    if(modal==='reset')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="reset-title"><h2 id="reset-title">모든 정보를 완전히 초기화할까요?</h2><p>프로필·기록·설정과 이전 버전 데이터를 모두 삭제합니다.</p><p class="alert">복구할 수 없습니다. 필요한 기록은 먼저 백업하세요.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-danger" data-action="reset">확인 · 전체 초기화</button></div></section></div>`;
+    if(modal==='legacy')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>v1.0 기록 가져오기</h2><p>현재 기록을 이전 기록으로 교체합니다. 먼저 백업하세요.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="migrate-legacy">가져오기</button></div></section></div>`;
+    if(modal==='import')return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true"><h2>백업을 복원할까요?</h2><p>현재 데이터를 백업 내용으로 교체합니다.</p><div class="modal-buttons"><button class="btn btn-outline" data-action="close-modal">취소</button><button class="btn btn-primary" data-action="import-confirm">복원</button></div></section></div>`;
     return '';
   }
   function render(){const html=view==='profile'?renderProfile():view==='workout'?renderWorkout():view==='finish'?renderFinish():view==='history'?renderHistory():view==='weight'?renderWeight():view==='settings'?renderSettings():renderHome();root.innerHTML=html+modalHtml();document.title=`칼리코치 · ${view==='profile'?'신체정보':view==='workout'?'운동 중':view==='history'?'월별 운동 기록':view==='weight'?'체중 기록':'내 운동 앱'}`;}
@@ -426,51 +493,86 @@
   function activateCurrent(){
     const a=data.active; if(!a)return;
     const step=currentStep();if(!step)return;
-    a.mode='work';a.previousMode=null;
+    if(a.mode==='rest'&&a.restStartedAt)a.lastRestSeconds=Math.round((Date.now()-a.restStartedAt)/1000);
+    a.mode='work';a.previousMode=null;a.draft={};
     a.timerEndAt = exercise[step.id].type==='timed' ? Date.now()+getAmount(step.id)*1000 : null;
     a.remaining=null;
     save();
     beep();speak(`${exercise[step.id].title}. ${exercise[step.id].range||'시작'} .`);
     render();keepAwake();
   }
-  function startSession(){
+  function startSession(light=false){
     if(data.active){view='workout';render();return;}
+    if(!light&&!Coach.recoveryStatus(data.workouts).ready){modal='readiness';render();return;}
     const plan=Coach.nextPlan(data.programIndex,data.profile?.days);
-    const rounds=num(data.settings.rounds,1,4);
-    data.active={plan,rounds,steps:buildSteps(plan,rounds),index:0,completedSteps:0,feedback:{},mode:'work',previousMode:null,startedAt:Date.now(),timerEndAt:Date.now()+getAmount('prep1')*1000,remaining:null};
+    const definition=planFor(plan,light),steps=Coach.buildSteps(definition,data.profile,data.progress);
+    if(!definition.slots.length){alert('수행 가능한 본운동이 없습니다. 불편 부위와 제외된 운동을 확인하고 오늘은 회복 활동을 선택하세요.');return;}
+    data.active={version:2,level:Coach.trainingLevel(data.profile),trainingRevision:data.trainingRevision||0,plan,light,rounds:definition.rounds,prescription:structuredClone(definition),steps,originalSteps:structuredClone(steps),index:0,completedSteps:0,feedback:{},draft:{},mode:'work',previousMode:null,startedAt:Date.now(),timerEndAt:Date.now()+60000,remaining:null};
     view='workout';modal=null;save();ensureAudio();speak('준비운동 시작. 어깨와 팔을 가볍게 풀어주세요.');render();keepAwake();
   }
-  function doneStep(isSkip=false){
+  function doneStep(isSkip=false,preserveRecord=false){
     const a=data.active;if(!a || a.mode!=='work')return;
     const steps=currentSteps(); const prior=steps[a.index];
+    if(prior.phase==='main'){
+      if(isSkip&&!preserveRecord){a.feedback=a.feedback||{};a.feedback[stepKey(prior)]={status:'skipped'};}
+      else if(!a.feedback?.[stepKey(prior)]&&!recordSet('unrated'))return;
+    }
     if(!isSkip) a.completedSteps=(a.completedSteps||0)+1;
     a.index++;
     if(a.index>=steps.length){completeSession();return;}
     const next=steps[a.index];
     let rest=0;
-    if(prior.phase==='main' && (next.phase==='main'||next.phase==='bonus'))rest=(next.phase==='main' && next.round!==prior.round)?num(data.settings.longRest,20,150):num(data.settings.rest,10,90);
+    if(prior.phase==='main' && (next.phase==='main'||next.phase==='bonus'))rest=next.pairOf===prior.id?15:next.id===prior.id?num(a.prescription?.longRest||a.legacyLongRest||data.settings.longRest,a.legacyLongRest?20:60,180):num(next.rest||a.legacyRest||data.settings.rest,a.legacyRest?10:45,180);
     else if(prior.phase==='bonus'&& next.phase==='bonus')rest=20;
-    if(rest>0){a.mode='rest';a.previousMode=null;a.timerEndAt=Date.now()+rest*1000;a.remaining=null;save();beep();render();}
+    if(rest>0){a.mode='rest';a.restStartedAt=Date.now();a.previousMode=null;a.timerEndAt=Date.now()+rest*1000;a.remaining=null;save();beep();render();}
     else activateCurrent();
+  }
+  function recordSet(vote){
+    const a=data.active,s=currentStep(),m=Coach.MOVES[s?.id];if(!a||a.mode!=='work'||s?.phase!=='main'||!m)return true;
+    const target=getAmount(s.id),elapsed=m.timed?Math.min(target,Math.max(0,target-Math.ceil((a.timerEndAt-Date.now())/1000))):null;
+    const draft=a.draft||{},inputValue=field=>$(`[data-actual="${field}"]`)?.value??draft[field]??target;
+    const left=m.each?Number(inputValue('left')):null,right=m.each?Number(inputValue('right')):null;
+    const actual=m.timed?elapsed:m.each?Math.min(left,right):Number(inputValue('actual'));
+    if(vote!=='pain'&&(!Number.isFinite(actual)||actual<0||actual>100||(!m.timed&&!Number.isInteger(actual))||(m.each&&(!Number.isInteger(left)||!Number.isInteger(right)||left<0||right<0||left>100||right>100)))){alert('실제 수행 횟수를 0~100 사이의 정수로 입력해주세요.');return false;}
+    a.feedback=a.feedback||{};a.feedback[stepKey(s)]={id:s.id,vote,actual:vote==='pain'?0:actual,...(m.each&&vote!=='pain'?{left,right}:{}),rir:vote==='easy'?4:vote==='ok'?2:vote==='hard'?0:null,target,restSecondsBeforeSet:a.lastRestSeconds??null,confirmed:vote!=='unrated',recordedAt:new Date().toISOString()};
+    if(vote==='hard'||vote!=='pain'&&actual<Math.min(target,m.min)){
+      const adjusted=Coach.reducePrescription({...s,amount:target},data.profile,actual);
+      const paired=['sideleft','sideright'].includes(s.id)&&adjusted.id==='dead',rounds=new Set([s.round]);
+      for(let i=a.index+1;i<a.steps.length;i++)if(a.steps[i].phase==='main'&&(a.steps[i].id===s.id||paired&&a.steps[i].pattern===s.pattern)){
+        const old=a.steps[i];
+        if(paired&&rounds.has(old.round)){a.feedback[stepKey(old)]={status:'skipped',reason:'adjustment'};a.steps.splice(i--,1);continue;}
+        rounds.add(old.round);a.steps[i]={...old,...adjusted,key:old.key,round:old.round,totalSets:old.totalSets};delete a.steps[i].pairOf;delete a.steps[i].pair;
+      }
+      a.notice='남은 세트의 강도를 낮췄습니다.';
+    }
+    if(vote==='pain'){
+      const pattern=m.pattern;
+      for(let i=a.steps.length-1;i>a.index;i--)if(a.steps[i].phase==='main'&&Coach.MOVES[a.steps[i].id]?.pattern===pattern){a.feedback[stepKey(a.steps[i])]={status:'skipped',reason:'pain'};a.steps.splice(i,1);}
+      data.progress=Coach.applyFeedback(data.progress,[s],{[stepKey(s)]:a.feedback[stepKey(s)]},data.profile);
+      a.notice='통증으로 이 운동 범주를 제외했습니다. 통증이 계속되면 재개하지 마세요.';
+    }
+    save();return true;
   }
   function startFromRest(){if(!data.active||data.active.mode!=='rest')return;activateCurrent();}
   function togglePause(){const a=data.active;if(!a)return;
     if(a.mode==='paused'){a.mode=a.previousMode||'work';a.timerEndAt = a.remaining!==null && a.remaining!==undefined ? Date.now()+a.remaining : null;a.remaining=null;a.previousMode=null;save();render();keepAwake();}
     else {a.previousMode=a.mode;a.remaining=a.timerEndAt ? Math.max(0,a.timerEndAt-Date.now()):null;a.timerEndAt=null;a.mode='paused';save();render();releaseWake();}
   }
-  function goBack(){const a=data.active;if(!a||a.index<1)return;a.index--;a.completedSteps=Math.max(0,(a.completedSteps||0)-1);activateCurrent();}
+  function goBack(){const a=data.active;if(!a||a.index<1)return;const prior=currentSteps()[a.index-1];if(prior.phase==='main'&&data.progress?.blocked?.[Coach.MOVES[prior.id]?.pattern]){a.notice='통증으로 제외한 동작입니다. 상태를 확인하세요.';render();return;}a.index--;a.completedSteps=Math.max(0,(a.completedSteps||0)-1);activateCurrent();}
   function completeSession(){const a=data.active;if(!a)return;
     const steps=currentSteps();
-    data.progress=Coach.applyFeedback(data.progress||{},steps,(a.feedback||{}));
-    lastFinished={plan:a.plan,completedAt:new Date().toISOString(),minutes:Math.max(1,Math.round((Date.now()-a.startedAt)/60000)),stepsCompleted:a.completedSteps||0,totalSteps:currentSteps().length};
-    data.workouts.push(lastFinished);data.programIndex=(data.programIndex||0)+1;data.nextPlan=Coach.nextPlan(data.programIndex,data.profile?.days);data.active=null;modal=null;view='finish';releaseWake();save();beep();speak('운동 완료. 오늘도 수고하셨습니다.');render();
+    const changedLevel=a.level&&a.level!==Coach.trainingLevel(data.profile)||a.trainingRevision!=null&&a.trainingRevision!==(data.trainingRevision||0);
+    const progressFeedback=changedLevel?Object.fromEntries(Object.entries(a.feedback||{}).filter(([,r])=>r.vote==='pain')):a.light?Object.fromEntries(Object.entries(a.feedback||{}).filter(([,r])=>['hard','pain'].includes(r.vote))):a.feedback||{};
+    data.progress=Coach.applyFeedback(data.progress||{},steps,progressFeedback,data.profile);
+    lastFinished={version:2,plan:a.plan,light:!!a.light,completedAt:new Date().toISOString(),minutes:Math.max(1,Math.round((Date.now()-a.startedAt)/60000)),stepsCompleted:a.completedSteps||0,totalSteps:currentSteps().length,prescription:a.prescription||null,steps:a.originalSteps||steps,feedback:a.feedback||{}};
+    data.workouts.push(lastFinished);if(!a.light)data.programIndex=(data.programIndex||0)+1;data.nextPlan=Coach.nextPlan(data.programIndex,data.profile?.days);data.active=null;modal=null;view='finish';releaseWake();save();beep();speak('운동 완료. 오늘도 수고하셨습니다.');render();
   }
   function tick(){const a=data.active;if(!a||view!=='workout'||a.mode==='paused')return;
     if(a.timerEndAt && Date.now()>=a.timerEndAt){if(a.mode==='rest')startFromRest();else if(a.mode==='work'&&exercise[currentStep().id].type==='timed')doneStep();return;}
     const output=$('[data-countdown]');if(output && a.timerEndAt)output.textContent=String(remainingTime(a));
   }
   async function downloadBackup(){
-    const blob=new Blob([JSON.stringify({app:'calicoach',version:4,exportedAt:new Date().toISOString(),data},null,2)],{type:'application/json'});
+    const blob=new Blob([JSON.stringify({app:'calicoach',version:5,exportedAt:new Date().toISOString(),data},null,2)],{type:'application/json'});
     const filename=`calicoach-backup-${dateStr()}.json`;
     if(typeof File!=='undefined'&&navigator.share&&navigator.canShare){
       try{const file=new File([blob],filename,{type:'application/json'});if(navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'칼리코치 개인 백업'});return;}}
@@ -484,22 +586,33 @@
     try{
       if(file.size>4000000)throw new Error('백업 파일 크기가 너무 큽니다.');
       const obj=JSON.parse(await file.text());
-      if(obj.app!=='calicoach'||![1,2,3,4].includes(obj.version)||!obj.data||!Array.isArray(obj.data.workouts)||!Array.isArray(obj.data.weights))throw new Error('올바른 칼리코치 백업이 아닙니다.');
+      if(obj.app!=='calicoach'||![1,2,3,4,5].includes(obj.version)||!obj.data||!Array.isArray(obj.data.workouts)||!Array.isArray(obj.data.weights))throw new Error('올바른 칼리코치 백업이 아닙니다.');
       if(obj.data.workouts.length>10000||obj.data.weights.length>10000)throw new Error('기록 개수가 너무 많습니다.');
       if(obj.version===2 && !OLD_USERS[obj.userId])throw new Error('이전 버전 사용자 ID를 확인할 수 없습니다.');
       importCandidate=obj;modal='import';render();
     }catch(err){alert(`백업을 열 수 없습니다: ${err.message}`);}
   }
+  function sanitizeWorkout(w){
+    const result={plan:w.plan,completedAt:w.completedAt,minutes:num(w.minutes,1,999),stepsCompleted:Math.max(0,Math.min(500,Number(w.stepsCompleted)||0)),totalSteps:Math.max(0,Math.min(500,Number(w.totalSteps)||0)),light:!!w.light};
+    if(w.version===2){
+      result.version=2;
+      result.steps=(Array.isArray(w.steps)?w.steps:[]).slice(0,100).filter(s=>s&&exercise[s.id]&&['warmup','main','cooldown'].includes(s.phase)).map(s=>({id:s.id,phase:s.phase,round:Math.round(num(s.round,0,4)),key:typeof s.key==='string'?s.key.slice(0,100):undefined,amount:num(s.amount,1,100),totalSets:num(s.totalSets,1,4),...(Coach.MOVES[s.id]?{pattern:Coach.MOVES[s.id].pattern,min:num(s.min||Coach.MOVES[s.id].min,1,100),max:num(s.max||Coach.MOVES[s.id].max,1,100),each:!!s.each,timed:!!s.timed}:{}),practice:!!s.practice}));
+      result.feedback={};
+      for(const s of result.steps){const r=w.feedback?.[stepKey(s)];if(!r||typeof r!=='object')continue;result.feedback[stepKey(s)]=r.status==='skipped'?{status:'skipped'}:{id:exercise[r.id]?r.id:s.id,vote:['easy','ok','hard','pain','unrated'].includes(r.vote)?r.vote:'unrated',actual:Number.isFinite(r.actual)?Math.max(0,Math.min(100,r.actual)):null,target:num(r.target||s.amount,1,100),...(Number.isFinite(r.left)&&Number.isFinite(r.right)?{left:Math.max(0,Math.min(100,r.left)),right:Math.max(0,Math.min(100,r.right))}:{}),rir:[0,2,4].includes(r.rir)?r.rir:null,restSecondsBeforeSet:Number.isFinite(r.restSecondsBeforeSet)?Math.max(0,Math.min(86400,r.restSecondsBeforeSet)):null};}
+      if(w.prescription&&typeof w.prescription==='object')result.prescription={version:2,label:w.plan+' 루틴',light:!!w.light,rest:num(w.prescription.rest,45,180),longRest:num(w.prescription.longRest,60,180),estimatedMinutes:num(w.prescription.estimatedMinutes,1,999),slots:(Array.isArray(w.prescription.slots)?w.prescription.slots:[]).filter(s=>s&&Coach.MOVES[s.id]).slice(0,5).map(s=>({id:s.id,pattern:Coach.MOVES[s.id].pattern,min:num(s.min||Coach.MOVES[s.id].min,1,100),max:num(s.max||Coach.MOVES[s.id].max,1,100),sets:num(s.sets,1,4),amount:num(s.amount,1,100),each:!!s.each,timed:!!s.timed,...(s.pair==='sideright'?{pair:'sideright'}:{})}))};
+    }
+    return result;
+  }
   function restore(){
     if(!importCandidate)return;
     const item=importCandidate.data,def=DEFAULTS();
     const safeWeights=item.weights.filter(w=>w&&/^\d{4}-\d{2}-\d{2}$/.test(w.date)&&Number.isFinite(Number(w.weight))&&Number(w.weight)>=30&&Number(w.weight)<=250).map(w=>({date:w.date,weight:Number(w.weight)}));
-    const safeWorkouts=item.workouts.filter(w=>w&&['A','B','C'].includes(w.plan)&&!Number.isNaN(new Date(w.completedAt).valueOf())).map(w=>({plan:w.plan,completedAt:w.completedAt,minutes:num(w.minutes,1,999),stepsCompleted:num(w.stepsCompleted,0,500)}));
-    const importedProfile=[3,4].includes(importCandidate.version) ? item.profile : importCandidate.version===2 ? {...(item.profile||{}),name:OLD_USERS[importCandidate.userId]?.name||data.profile?.name,gender:OLD_USERS[importCandidate.userId]?.gender||data.profile?.gender||''} : data.profile;
+    const safeWorkouts=item.workouts.filter(w=>w&&['A','B','C'].includes(w.plan)&&!Number.isNaN(new Date(w.completedAt).valueOf())).map(sanitizeWorkout);
+    const importedProfile=[3,4,5].includes(importCandidate.version) ? item.profile : importCandidate.version===2 ? {...(item.profile||{}),name:OLD_USERS[importCandidate.userId]?.name||data.profile?.name,gender:OLD_USERS[importCandidate.userId]?.gender||data.profile?.gender||''} : data.profile;
     // 버전 1에서는 프로필을 덮어쓰지 않으며, 현재 사용자 프로필을 유지합니다.
     const validProfile=savedProfileValid(importedProfile)?importedProfile:data.profile;
-    data={profile:validProfile,settings:{...def.settings,rounds:num(item.settings?.rounds,1,4),rest:num(item.settings?.rest,10,90),longRest:num(item.settings?.longRest,20,150),sound:!!item.settings?.sound,speech:!!item.settings?.speech,targetWeight:Number(validProfile?.targetWeight||0),reps:{}},weights:safeWeights,workouts:safeWorkouts,nextPlan:['A','B','C'].includes(item.nextPlan)?item.nextPlan:'A',programIndex:Number.isInteger(item.programIndex)?item.programIndex:(item.nextPlan==='B'?1:0),progress:item.progress&&typeof item.progress==='object'?item.progress:{},active:null};
-    for(const [k,v] of Object.entries(item.settings?.reps||{}))if(exercise[k]&&Number.isFinite(Number(v)))data.settings.reps[k]=num(v,1,80);
+    const activities=(Array.isArray(item.activities)?item.activities:[]).slice(0,10000).filter(a=>a&&validRecordDate(a.date)&&a.date<=dateStr()&&Number.isInteger(a.minutes)&&a.minutes>=1&&a.minutes<=300&&['moderate','light'].includes(a.intensity)).map(a=>({date:a.date,minutes:a.minutes,intensity:a.intensity}));
+    data=normalizeData({...item,profile:validProfile,settings:{...def.settings,...item.settings,targetWeight:Number(validProfile?.targetWeight||0)},weights:safeWeights,workouts:safeWorkouts,activities,active:null});
     view=savedProfileValid(data.profile)?'home':'profile';modal=null;importCandidate=null;save();render();alert('현재 사용자 기록으로 백업을 복원했습니다.');
   }
   function migrateLegacy(){
@@ -570,8 +683,9 @@
       return;
     }
     if(action==='close-modal'){modal=null;render();return;}
-    if(modal && !['quit','reset','records-reset','import-confirm','migrate-legacy'].includes(action))return;
+    if(modal && !['quit','reset','records-reset','import-confirm','migrate-legacy','start-ready','start-light','walk-today'].includes(action))return;
     if(action==='go-profile'){profileAppliedMessage=false;view='profile';window.scrollTo(0,0);render();return;}
+    if(action==='set-level'){setTrainingLevel(button.dataset.level);return;}
     if(action==='profile-back'){view='settings';render();return;}
     if(action==='migrate-legacy-confirm'){modal='legacy';render();return;}
     if(action==='migrate-legacy'){migrateLegacy();return;}
@@ -585,9 +699,14 @@
     }
     if(action==='history-day'){if(validRecordDate(button.dataset.date)){historyDay=button.dataset.date;render();}return;}
     if(action==='history-all'){historyDay=null;render();return;}
-    if(action==='start'||action==='resume'){ensureAudio();startSession();return;}
-    if(action==='done'){if(data.active?.mode==='work'&&currentStep()?.phase==='main'){data.active.feedback=data.active.feedback||{};data.active.feedback[stepKey(currentStep())]='ok';}doneStep();return;}
-    if(action==='rate-easy'||action==='rate-hard'){if(data.active?.mode!=='work'||currentStep()?.phase!=='main')return;data.active.feedback=data.active.feedback||{};data.active.feedback[stepKey(currentStep())]=action==='rate-easy'?'easy':'hard';doneStep();return;}
+    if(action==='start'){ensureAudio();startSession();return;}
+    if(action==='resume'){ensureAudio();startSession();return;}
+    if(action==='start-ready'||action==='start-light'){modal=null;ensureAudio();startSession(action==='start-light');return;}
+    if(action==='walk-today'){modal=null;view='home';render();root.querySelector?.('.walking-card')?.scrollIntoView({behavior:'smooth'});return;}
+    if(action==='review-pain'){if(data.active)return;data.progress={...data.progress,blocked:{}};save();render();return;}
+    if(action==='delete-walk'){data.activities=(data.activities||[]).filter(a=>!(a.date===button.dataset.date&&a.intensity===button.dataset.intensity));save();render();return;}
+    if(action==='done'){if(!recordSet('ok'))return;doneStep();return;}
+    if(['rate-easy','rate-hard','rate-pain'].includes(action)){if(data.active?.mode!=='work'||currentStep()?.phase!=='main')return;if(!recordSet(action==='rate-easy'?'easy':action==='rate-hard'?'hard':'pain'))return;doneStep(action==='rate-pain',action==='rate-pain');if(action==='rate-pain'&&data.active&&data.active.mode!=='paused')togglePause();return;}
     if(action==='skip-step'){if(data.active?.mode==='paused')return;doneStep(true);return;}
     if(action==='skip-rest'){if(data.active?.mode==='paused' && data.active.previousMode==='rest') data.active.mode='rest';startFromRest();return;}
     if(action==='pause'){togglePause();return;}
@@ -599,16 +718,16 @@
       modal='details';render();return;
     }
     if(action==='quit-confirm'){modal='quit';render();return;}
-    if(action==='quit'){data.active=null;view='home';modal=null;save();releaseWake();render();return;}
+    if(action==='quit'){if(data.active){const a=data.active,changed=a.level&&a.level!==Coach.trainingLevel(data.profile)||a.trainingRevision!=null&&a.trainingRevision!==(data.trainingRevision||0);const feedback=changed?Object.fromEntries(Object.entries(a.feedback||{}).filter(([,r])=>r.vote==='pain')):a.feedback||{};if(!a.light)data.progress=Coach.applyFeedback(data.progress,currentSteps(),feedback,data.profile);}data.active=null;view='home';modal=null;save();releaseWake();render();return;}
     if(action==='finish-home'){lastFinished=null;view='home';render();return;}
     if(action==='setting-step'){
       const {key,delta}=button.dataset;
-      const bounds={rounds:[1,4],rest:[10,90],longRest:[20,150]};if(!bounds[key])return;
-      data.settings[key]=num(Number(data.settings[key])+Number(delta),...bounds[key]);save();render();return;
+      const bounds={setAdjustment:[-1,1],rest:[45,180],longRest:[60,180]};if(!bounds[key])return;
+      data.settings[key]=Math.max(bounds[key][0],Math.min(bounds[key][1],Number(data.settings[key])+Number(delta)));save();render();return;
     }
     if(action==='rep-minus'||action==='rep-plus'){
       const step=currentStep();if(!step||exercise[step.id].type!=='reps')return;
-      data.settings.reps[step.id]=num(getAmount(step.id)+(action==='rep-plus'?1:-1),1,80);save();render();return;
+      if(data.active.mode!=='work')return;step.amount=num(getAmount(step.id)+(action==='rep-plus'?1:-1),1,80);data.active.draft={};save();render();return;
     }
     if(action==='export'){downloadBackup();return;}
     if(action==='import'){$('#backup-file')?.click();return;}
@@ -628,7 +747,8 @@
     }
   },true);
   root.addEventListener('submit',event => {
-    const form=event.target;if(!['profile-form','weight-form','target-form'].includes(form.id))return;event.preventDefault();
+    const form=event.target;if(!['profile-form','weight-form','target-form','walking-form'].includes(form.id))return;event.preventDefault();
+    if(form.id==='walking-form'){const fd=new FormData(form);saveWalking(String(fd.get('date')||''),fd.get('minutes'),String(fd.get('intensity')||''));return;}
     if(form.id==='profile-form'){saveProfile(form);return;}
     if(form.id==='weight-form'){
       const fields=new FormData(form);saveWeight(String(fields.get('date')||''),fields.get('weight'));return;
@@ -639,6 +759,7 @@
   });
   root.addEventListener('change',event => {
     const target=event.target;
+    if(target.dataset?.actual&&data.active?.mode==='work'){data.active.draft=data.active.draft||{};data.active.draft[target.dataset.actual]=target.value;save();return;}
     if(target.dataset?.monthKind&&/^\d{4}-(0[1-9]|1[0-2])$/.test(target.value)){
       if(target.dataset.monthKind==='history'){historyMonth=target.value;historyDay=null;}
       if(target.dataset.monthKind==='weight'){weightMonth=target.value;weightMessage='';}
@@ -647,6 +768,7 @@
     if(target.matches('[data-setting]')) {data.settings[target.dataset.setting]=target.checked;save();}
     if(target.id==='backup-file')handleImport(target);
   });
+  root.addEventListener('input',event=>{const t=event.target;if(t.dataset?.actual&&data.active?.mode==='work'){data.active.draft=data.active.draft||{};data.active.draft[t.dataset.actual]=t.value;save();}});
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){tick();if(view==='workout')keepAwake();} else releaseWake();});
   window.addEventListener('pagehide',save);
   if('serviceWorker' in navigator && location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('오프라인 캐시 등록 실패:',err));

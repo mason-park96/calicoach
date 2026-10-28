@@ -1,0 +1,71 @@
+const assert=require('node:assert/strict');
+const E=require('../coach-engine.js');
+const profile={level:'intermediate',minutes:30,days:3,pushups:12,adjustAreas:[]};
+let combinations=0;
+for(const level of ['beginner','intermediate','advanced'])for(const minutes of [20,30,45])for(const plan of ['A','B','C'])for(let mask=0;mask<512;mask++){
+  const p={...profile,level,minutes,adjustAreas:E.bodyAreas.filter((_,i)=>mask&(1<<i)).map(([id])=>id)};
+  const d=E.selectRoutine(p,plan,{},{});
+  assert.equal(new Set(d.items).size,d.items.length);
+  assert.equal(new Set(d.slots.map(s=>s.pattern)).size,d.slots.length);
+  assert(d.slots.every(s=>s.sets>=1&&s.sets<=4));
+  assert(d.items.every(id=>E.MOVES[id]));
+  assert(d.slots.some(s=>s.pattern==='trunkControl'),'20-minute plans retain core');
+  assert(d.slots.some(s=>s.pattern==='hipExtension'&&['bridge','singlebridge'].includes(s.id)));
+  if(p.adjustAreas.includes('knee'))assert(d.missing.includes('kneeDominant'));
+  combinations++;
+}
+for(const [minutes,sets] of [[20,[2,2,2,2,1]],[30,[3,3,2,2,2]],[45,[3,3,3,3,2]]]){
+  const d=E.selectRoutine({...profile,minutes},'A');
+  assert.deepEqual(d.slots.map(s=>s.sets),sets);
+}
+assert.equal(E.MOVES.hipabduct.pattern,'hipAbduction');
+assert.equal(E.MOVES.wraise.pattern,'scapularAccessory');
+assert(E.weeklySchedule(5).filter(x=>['A','B','C'].includes(x)).length===3);
+assert.equal(E.recoveryStatus([{completedAt:'2026-10-27T10:00:00'}],new Date('2026-10-28T12:00:00')).ready,false);
+assert.equal(E.recoveryStatus([{completedAt:'2026-10-26T10:00:00'}],new Date('2026-10-28T12:00:00')).ready,true);
+assert.equal(E.recoveryStatus([{completedAt:'2026-10-28T10:00:00',light:true}],new Date('2026-10-28T12:00:00')).ready,true);
+const intro=E.selectRoutine({...profile,level:'beginner'},'A',{}, {completedSessions:0});
+assert.deepEqual(intro.slots.map(s=>s.sets),[2,2,2,2,1]);
+assert(intro.items.includes('wall'));
+assert.deepEqual(E.selectRoutine({...profile,level:'beginner'},'A',{}, {completedSessions:100}).items,intro.items,'Completed sessions do not silently change level');
+const side=E.selectRoutine({...profile,sidePlankReady:true},'B');
+const sideSteps=E.buildSteps(side,profile,{}).filter(s=>s.phase==='main');
+assert.equal(sideSteps.filter(s=>s.id==='sideleft').length,sideSteps.filter(s=>s.id==='sideright').length);
+assert.equal(side.totalSets,side.slots.reduce((n,s)=>n+s.sets,0));
+assert(E.selectRoutine(profile,'A',{}, {light:true}).slots.every(s=>s.sets===1));
+const highRest=E.selectRoutine({...profile,minutes:20},'A',{}, {rest:180});
+assert(highRest.slots.every(s=>s.sets>=1));
+const steps=[1,2,3].map(round=>({id:'knee',phase:'main',round,amount:12,key:'knee-'+round}));
+const top=Object.fromEntries(steps.map(s=>[s.key,{vote:'easy',actual:12,rir:4}]));
+let progress=E.applyFeedback({},steps,top,profile);
+assert.equal(progress.exercises.knee.successes,1);
+const partial={...top,[steps[2].key]:{status:'skipped'}};
+progress=E.applyFeedback(progress,steps,partial,profile);
+assert.equal(progress.exercises.knee.successes,0);
+assert(!progress.choices.horizontalPush);
+progress=E.applyFeedback(progress,steps,top,profile);
+progress=E.applyFeedback(progress,steps,top,profile);
+assert.equal(progress.choices.horizontalPush,undefined,'No automatic promotion beyond selected level');
+const hardStep={id:'push',phase:'main',round:1,amount:6,key:'hard'};
+progress=E.applyFeedback(progress,[hardStep],{hard:{vote:'hard',actual:3}},profile);
+assert.equal(progress.choices.horizontalPush,'knee');
+assert(E.targetAmount('knee',profile,progress)<=6);
+const pain=E.applyFeedback({},[hardStep],{hard:{vote:'pain',actual:0}},profile);
+assert(!E.selectRoutine(profile,'A',pain).slots.some(s=>s.pattern==='horizontalPush'));
+const legacy=E.applyFeedback({push:{tier:2,bonus:6}},steps,Object.fromEntries(steps.map(s=>[s.key,'easy'])),profile);
+assert(!legacy.choices.horizontalPush);
+assert.equal(legacy.exercises.knee.successes,0);
+const tiny={id:'wall',phase:'main',round:1,amount:1,key:'tiny'};
+const tinyProgress=E.applyFeedback({},[tiny],{tiny:{vote:'easy',actual:1,rir:4}},profile);
+assert.equal(tinyProgress.exercises.wall.target,2,'A reduced entry target can recover gradually');
+const mixedSteps=[{id:'knee',phase:'main',round:1,amount:6,key:'mixed-hard'},{id:'wall',phase:'main',round:2,amount:12,key:'mixed-easy'}];
+const mixed=E.applyFeedback({version:2,mode:'manual-level',level:'intermediate',exercises:{wall:{successes:1}},choices:{},blocked:{}},mixedSteps,{'mixed-hard':{vote:'hard',actual:2},'mixed-easy':{vote:'easy',actual:12,rir:4}},profile);
+assert.equal(mixed.choices.horizontalPush,'wall','A failure in the same pattern prevents promotion that session');
+for(const [level,push,hip] of [['beginner','wall','bridge'],['intermediate','knee','bridge'],['advanced','push','singlebridge']]){
+ const selected=E.selectRoutine({...profile,level,pushups:0},'A');
+ assert(selected.items.includes(push));assert(selected.items.includes(hip));
+}
+const ignoredAuto=E.selectRoutine(profile,'A',{version:2,choices:{horizontalPush:'push'},exercises:{knee:{target:12}},blocked:{}});
+assert(ignoredAuto.items.includes('knee'),'Old automatic promotions do not override manual level');
+assert.equal(ignoredAuto.slots.find(s=>s.id==='knee').amount,8);
+console.log(`PASS training-engine: ${combinations} symptom/profile combinations, volume, core, recovery, paired sides, progression, downgrade, pain and historical feedback`);
