@@ -27,7 +27,7 @@ assert.equal(oldVotes.exercises.knee.successes,0,'Old votes cannot stand in for 
 class Storage{constructor(){this.map={}}get length(){return Object.keys(this.map).length}key(i){return Object.keys(this.map)[i]??null}getItem(k){return this.map[k]??null}setItem(k,v){this.map[k]=String(v)}removeItem(k){delete this.map[k]}}
 const guideContext={window:{}};vm.runInNewContext(fs.readFileSync(path.join(rootDir,'exercise-guides.js'),'utf8'),guideContext);
 const videoContext={window:{}};vm.runInNewContext(fs.readFileSync(path.join(rootDir,'video-catalog.js'),'utf8'),videoContext);
-const code=fs.readFileSync(path.join(rootDir,'app.js'),'utf8').replace('  render();setInterval(tick,250);', '  globalThis.TEST={getState:()=>({view,data:structuredClone(data),html:root.innerHTML}),saveProfile,startSession,completeSession,planFor,buildSteps,render,saveWeight,weightChanges,monthlyWorkouts,shiftMonth,saveWalking,recordSet,doneStep,tick,restore,handleImport,setTrainingLevel};render();setInterval(tick,250);');
+const code=fs.readFileSync(path.join(rootDir,'app.js'),'utf8').replace('  render();setInterval(tick,250);', '  globalThis.TEST={getState:()=>({view,data:structuredClone(data),html:root.innerHTML}),saveProfile,startSession,completeSession,planFor,buildSteps,render,saveWeight,weightChanges,monthlyWorkouts,shiftMonth,recordSet,doneStep,tick,restore,handleImport,setTrainingLevel};render();setInterval(tick,250);');
 function boot(local=new Storage(),tab=new Storage()){
  const handlers={};const root={innerHTML:'',addEventListener:(name,fn)=>{handlers[name]=fn}};
  const document={getElementById:id=>id==='app'?root:null,addEventListener:()=>{},querySelector:()=>null};
@@ -252,8 +252,11 @@ const remainingCore=sideHard.api.getState().data.active.steps.filter((s,i)=>i>=s
 assert(remainingCore.every(s=>s.id==='dead'));
 assert.equal(new Set(remainingCore.map(s=>s.round)).size,remainingCore.length,'Paired side-plank downgrade cannot duplicate core sets');
 
-const walking=boot();walking.api.saveProfile(form('걷기 검증',{area:[]}));
-const legacyActiveStore=new Storage(),legacyActiveFixture=walking.api.getState().data;
+const backupFixture=boot();backupFixture.api.saveProfile(form('백업 검증',{area:[]}));
+assert(!backupFixture.root.innerHTML.includes('걷기 기록'));
+assert(!backupFixture.root.innerHTML.includes('walking-form'));
+assert(!backupFixture.root.innerHTML.includes('/150분'));
+const legacyActiveStore=new Storage(),legacyActiveFixture=backupFixture.api.getState().data;
 delete legacyActiveFixture.trainingVersion;
 legacyActiveFixture.progress={push:{bonus:2}};legacyActiveFixture.settings.reps={bridge:17};
 legacyActiveFixture.active={plan:'A',rounds:3,index:1,mode:'work',startedAt:Date.now(),feedback:{},steps:[{id:'prep1',phase:'warmup',round:0},{id:'push',phase:'main',round:1},{id:'bridge',phase:'main',round:1},{id:'cool2',phase:'cooldown',round:0}]};
@@ -262,16 +265,10 @@ const oldSession=boot(legacyActiveStore).api.getState().data.active;
 assert.equal(oldSession.steps[1].amount,10,'In-progress legacy prescription is preserved');
 assert.equal(oldSession.steps[2].amount,17,'Legacy manual amount is captured in the session snapshot');
 const today=new Date(),todayKey=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
-assert.equal(walking.api.saveWalking(todayKey,30,'moderate'),true);
-assert.equal(walking.api.saveWalking(todayKey,40,'moderate'),true);
-assert.equal(walking.api.saveWalking(todayKey,10,'light'),true);
-assert.equal(walking.api.getState().data.activities.length,2);
-assert.equal(walking.api.saveWalking('2024-02-30',20,'moderate'),false);
-assert(walking.root.innerHTML.includes('40<small>/150분'));
-assert.equal(boot(walking.local).api.getState().data.activities.length,2);
+const oldActivities=[{date:todayKey,minutes:40,intensity:'moderate'},{date:todayKey,minutes:10,intensity:'light'}];
 
 async function checkTrainingBackups(){
-  const source=trained.api.getState().data;source.activities=walking.api.getState().data.activities;
+  const source=trained.api.getState().data;source.activities=oldActivities;
   const imported=boot();
   await imported.api.handleImport({files:[{size:20000,text:async()=>JSON.stringify({app:'calicoach',version:5,data:source})}]});
   imported.api.restore();
@@ -287,7 +284,7 @@ async function checkTrainingBackups(){
   assert.equal(imported.api.getState().data.settings.rest,60);
   assert.equal(Object.keys(imported.api.getState().data.progress).length,0);
   assert.equal(imported.api.getState().data.legacyProgress.push.tier,2);
-  console.log('PASS training integration: real set input, immediate downgrade, pain, skip, recovery, paired core, walking, v5 round trip and v4 migration');
+  console.log('PASS training integration: real set input, immediate downgrade, pain, skip, recovery, paired core, legacy activities, v5 round trip and v4 migration');
 }
 checkTrainingBackups().catch(error=>{console.error(error);process.exitCode=1;});
 
@@ -320,3 +317,31 @@ const reapply=bootAtMain();reapply.api.setTrainingLevel('intermediate');
 reapply.handlers.change({target:{dataset:{actual:'actual'},value:'1'}});click(reapply,'rate-hard');reapply.api.completeSession();
 assert.equal(Object.keys(reapply.api.getState().data.progress.exercises).length,0,'Reapplying the same preset also isolates the older session');
 console.log('PASS simplicity: direct start and same-level preset reapplication');
+
+const mediaApp=bootAtMain(),mediaStep=mediaApp.api.getState().data.active.steps.find(s=>s.phase==='main');
+assert(mediaApp.root.innerHTML.includes('aria-label="영상 크게 보기"'));
+click(mediaApp,'expand-media',mediaStep.id);
+assert.equal(mediaApp.api.getState().data.active.mode,'paused');
+assert(mediaApp.root.innerHTML.includes('class="media-viewer"'));
+assert(mediaApp.root.innerHTML.includes('role="dialog"'));
+click(mediaApp,'close-modal');
+assert(!mediaApp.root.innerHTML.includes('class="media-viewer"'));
+assert.equal(mediaApp.api.getState().data.active.mode,'paused','Closing expanded media does not resume automatically');
+click(mediaApp,'expand-media',mediaStep.id);mediaApp.handlers.keydown({key:'Escape'});
+assert(!mediaApp.root.innerHTML.includes('class="media-viewer"'));
+console.log('PASS media viewer: expand, timer pause, close and keyboard dismiss');
+const timedMedia=bootAtMain({level:'advanced'}),timedStore=JSON.parse(timedMedia.local.getItem('calicoach.pwa.v3.device'));
+timedStore.active.index=timedStore.active.steps.findIndex(s=>s.phase==='main'&&s.id==='plank');
+timedStore.active.timerEndAt=Date.now()+30000;timedStore.active.mode='work';
+timedMedia.local.setItem('calicoach.pwa.v3.device',JSON.stringify(timedStore));
+const timerViewer=boot(timedMedia.local);click(timerViewer,'expand-media','plank');
+assert.equal(timerViewer.api.getState().data.active.timerEndAt,null);
+assert(timerViewer.api.getState().data.active.remaining>0,'A timed exercise keeps its remaining time while expanded');
+click(timerViewer,'close-modal');assert.equal(timerViewer.api.getState().data.active.mode,'paused');
+const savedVideoCatalog=videoContext.window.CalicoachVideoCatalog;
+videoContext.window.CalicoachVideoCatalog={...savedVideoCatalog};
+delete videoContext.window.CalicoachVideoCatalog.squat;
+const gifViewer=bootAtMain();click(gifViewer,'expand-media','squat');
+assert(gifViewer.root.innerHTML.includes('src="./media/squat.gif"'),'Expanded view also supports GIF fallback');
+videoContext.window.CalicoachVideoCatalog=savedVideoCatalog;
+console.log('PASS timed media pause and GIF fallback');

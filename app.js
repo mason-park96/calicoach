@@ -299,7 +299,6 @@
     const strengthGoal=Math.min(3,Number(data.profile?.days)||3);
     const schedule=Coach.weeklySchedule(data.profile?.days);
     const recovery=Coach.recoveryStatus(data.workouts);
-    const walking=weeklyActivities(),moderateMinutes=walking.filter(a=>a.intensity==='moderate').reduce((n,a)=>n+a.minutes,0);
     const thisMonday = weekdayMonday(now);
     const daysDone = new Set(weekly.map(w => dateStr(new Date(w.completedAt))));
     const week = Array.from({length:7},(_,i)=>{const d=new Date(thisMonday);d.setDate(d.getDate()+i); const day=dateStr(d);return `<div class="weekbox ${daysDone.has(day)?'done':''} ${day===dateStr()?'today':''}"><strong>${['월','화','수','목','금','토','일'][i]}</strong><span class="mark">${daysDone.has(day)?'✓':d.getDate()}</span><small>${schedule[i]}</small></div>`;}).join('');
@@ -328,15 +327,11 @@
       <div class="sectionline"><div class="sectiontitle">이번 주 근력 진행률</div><div class="smallhint">${weekly.filter(w=>!w.light).length} / ${strengthGoal}회 목표</div></div>
       <div class="weeklist">${week}</div>
       <p class="fineprint">권장 일정 · 놓친 운동은 다음 순서로 이어가세요.</p>
-      <div class="metrics"><div class="card metric"><div class="metric-label">이번 주 중강도 걷기</div><div class="metric-value">${moderateMinutes}<small>/150분</small></div><div class="track"><div style="width:${Math.min(100,moderateMinutes/150*100)}%"></div></div></div><div class="card metric"><div class="metric-label">현재 체중 · 목표 ${goalWeight()}kg</div><div class="metric-value">${weight}<small>kg</small></div><div class="track"><div style="width:${progress}%"></div></div></div></div>
+      <div class="card metric home-weight"><div class="metric-label">현재 체중 · 목표 ${goalWeight()}kg</div><div class="metric-value">${weight}<small>kg</small></div><div class="track"><div style="width:${progress}%"></div></div></div>
       ${!recovery.ready?'<div class="note"><div class="note-icon">✦</div><div><strong>오늘은 회복일</strong><p>걷기나 가벼운 운동을 권합니다.</p></div></div>':''}
-      ${renderWalking(walking)}
     </div>${navigation('home')}`;
   }
   function patternLabel(id){return {kneeDominant:'무릎 중심 하체',horizontalPush:'상체 밀기',hipExtension:'고관절 폄',trunkControl:'코어',scapularAccessory:'견갑 보조'}[id]||id;}
-  function weeklyActivities(){const monday=weekdayMonday(new Date()),end=new Date(monday);end.setDate(end.getDate()+7);return (data.activities||[]).filter(a=>a&&validRecordDate(a.date)&&new Date(a.date+'T12:00:00')>=monday&&new Date(a.date+'T12:00:00')<end);}
-  function renderWalking(records){return `<section class="card formbox walking-card"><h2>걷기 기록</h2><p class="fineprint">중강도: 대화는 가능하고 노래는 어려운 정도.</p><form id="walking-form" class="training-form"><label class="date-field">날짜<input class="textinput" type="date" name="date" value="${dateStr()}" max="${dateStr()}" required/></label><label>걷기 시간 (분)<input class="textinput" type="number" name="minutes" value="15" min="1" max="300" required/></label><label>강도<select class="textinput" name="intensity"><option value="moderate">중강도 걷기</option><option value="light">가벼운 회복 걷기</option></select></label><button class="btn btn-outline" type="submit">걷기 저장</button></form><p class="fineprint">같은 날짜·강도는 덮어씁니다.</p>${records.map(a=>`<div class="walking-record">${humanDate(a.date)} · ${a.intensity==='moderate'?'중강도':'가벼운 걷기'} ${a.minutes}분<button data-action="delete-walk" data-date="${a.date}" data-intensity="${a.intensity}" aria-label="${a.date} 걷기 기록 삭제">삭제</button></div>`).join('')}</section>`;}
-  function saveWalking(day,minutes,intensity){const value=Number(minutes);if(!validRecordDate(day)||day>dateStr()||!Number.isInteger(value)||value<1||value>300||!['moderate','light'].includes(intensity)){alert('오늘까지의 날짜, 걷기 1~300분과 강도를 확인해주세요.');return false;}const before=data.activities;data.activities=[...(before||[]).filter(a=>!(a.date===day&&a.intensity===intensity)),{date:day,minutes:value,intensity}].sort((a,b)=>a.date.localeCompare(b.date));if(!save()){data.activities=before;alert('걷기 기록을 저장하지 못했습니다.');return false;}render();return true;}
   function validRecordDate(value){
     if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;
     const parsed=new Date(value+'T12:00:00');
@@ -442,7 +437,7 @@
       ${rest ? `<div class="reststage"><h1 class="exercise-title">잠깐 숨 고르기</h1><div class="restbubble" style="margin-top:36px"><div class="restnumber" data-countdown>${displayTime}</div><div class="restsmall">초 후 다음 운동</div></div><div class="restnext">다음 동작<strong>${escapeHtml(e.title)}</strong></div><button type="button" class="guide-rest-button" data-action="details" data-id="${step.id}">다음 동작 미리 배우기 ›</button></div><div class="action-area"><button class="btn btn-primary btn-full" data-action="skip-rest">바로 다음 운동 →</button>${controls}</div>`:
       `<main class="workout-stage"><div class="stage-line"><span class="phasepill">${PHASES[step.phase]}</span><span class="stage-count">${active.index+1} / ${steps.length}</span></div>
         <h1 class="exercise-title">${escapeHtml(e.title)}</h1>${step.phase==='main'?`<p class="exercise-subtitle">${step.round} / ${step.totalSets||active.rounds} 세트${step.min&&getAmount(step.id)<step.min?' · 목표 낮춤':''}</p>`:step.practice?'<p class="exercise-subtitle">연습</p>':''}
-        <div class="exercise-figure">${mediaHtml(step.id)}<div class="figure-number">${videoSource(step.id)?escapeHtml(mediaLabel(step.id)):'간략 동작 개념도'}</div></div>
+        <div class="exercise-figure">${mediaHtml(step.id)}<div class="figure-number">${videoSource(step.id)?escapeHtml(mediaLabel(step.id)):'동작 개념도'}</div><button class="media-expand" type="button" data-action="expand-media" data-id="${step.id}" aria-label="영상 크게 보기">⛶</button></div>
         <div class="targetcenter"><div><span class="target-value" ${e.type==='timed'?'data-countdown':''}>${e.type==='timed'?displayTime:getAmount(step.id)}</span><span class="target-unit">${e.unit}</span></div><div class="target-help">${e.type==='timed'?(paused?'일시정지':'종료 후 자동 전환'):(e.each?'좌우 각각':'')}</div>
           ${e.type==='reps'?`<div class="target-adjust"><button class="miniadjust" data-action="rep-minus" aria-label="횟수 줄이기">−</button><small>목표 횟수</small><button class="miniadjust" data-action="rep-plus" aria-label="횟수 늘리기">+</button></div>`:''}</div>
         ${step.phase==='main'&&e.type==='reps'?`<details class="set-details"><summary>실제 횟수 수정</summary><div class="actual-inputs">${(e.each?['left','right']:['actual']).map(side=>`<label>${side==='left'?'왼쪽 실제 횟수':side==='right'?'오른쪽 실제 횟수':'실제 수행 횟수'}<input class="textinput" type="number" min="0" max="100" step="1" data-actual="${side}" aria-label="${side==='actual'?'실제 수행 횟수':side==='left'?'왼쪽 실제 횟수':'오른쪽 실제 횟수'}" value="${active.draft?.[side]??getAmount(step.id)}" ${paused?'disabled':''}/></label>`).join('')}</div></details>`:''}
@@ -456,6 +451,7 @@
   }
   function modalHtml() {
     if(!modal)return '';
+    if(modal==='media'&&exercise[detailExerciseId])return `<section class="media-viewer" role="dialog" aria-modal="true" aria-labelledby="media-title"><header class="media-viewer-header"><h2 id="media-title">${escapeHtml(exercise[detailExerciseId].title)}</h2><button class="media-close" type="button" data-action="close-modal" aria-label="닫기">×</button></header><div class="media-viewer-stage">${mediaHtml(detailExerciseId)}</div></section>`;
     if(modal==='readiness'){const ready=Coach.recoveryStatus(data.workouts).ready;return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="readiness-title"><h2 id="readiness-title">회복 확인</h2><p>${ready?'피로가 남았다면 가볍게 진행하세요.':'오늘은 가벼운 운동이나 걷기를 권합니다.'}</p><div class="readiness-actions">${ready?'<button class="btn btn-primary btn-full" data-action="start-ready">회복 양호 · 기본 운동</button>':''}<button class="btn btn-outline btn-full" data-action="start-light">가볍게 · 각 1세트</button><button class="btn btn-outline btn-full" data-action="walk-today">오늘은 걷기·회복</button><button class="btn btn-ghost btn-full" data-action="close-modal">닫기</button></div></section></div>`;}
     if(modal==='details' && detailExerciseId && exercise[detailExerciseId]) {
       const id=detailExerciseId, detail=exercise[id], guide=Guides[id], ref=guide?.reference;
@@ -682,7 +678,7 @@
       if(video){video.playbackRate=Number(button.dataset.speed)||1;}
       return;
     }
-    if(action==='close-modal'){modal=null;render();return;}
+    if(action==='close-modal'){const expanded=modal==='media';modal=null;render();if(expanded)root.querySelector?.('.media-expand')?.focus?.();return;}
     if(modal && !['quit','reset','records-reset','import-confirm','migrate-legacy','start-ready','start-light','walk-today'].includes(action))return;
     if(action==='go-profile'){profileAppliedMessage=false;view='profile';window.scrollTo(0,0);render();return;}
     if(action==='set-level'){setTrainingLevel(button.dataset.level);return;}
@@ -702,15 +698,20 @@
     if(action==='start'){ensureAudio();startSession();return;}
     if(action==='resume'){ensureAudio();startSession();return;}
     if(action==='start-ready'||action==='start-light'){modal=null;ensureAudio();startSession(action==='start-light');return;}
-    if(action==='walk-today'){modal=null;view='home';render();root.querySelector?.('.walking-card')?.scrollIntoView({behavior:'smooth'});return;}
+    if(action==='walk-today'){modal=null;view='home';render();return;}
     if(action==='review-pain'){if(data.active)return;data.progress={...data.progress,blocked:{}};save();render();return;}
-    if(action==='delete-walk'){data.activities=(data.activities||[]).filter(a=>!(a.date===button.dataset.date&&a.intensity===button.dataset.intensity));save();render();return;}
+
     if(action==='done'){if(!recordSet('ok'))return;doneStep();return;}
     if(['rate-easy','rate-hard','rate-pain'].includes(action)){if(data.active?.mode!=='work'||currentStep()?.phase!=='main')return;if(!recordSet(action==='rate-easy'?'easy':action==='rate-hard'?'hard':'pain'))return;doneStep(action==='rate-pain',action==='rate-pain');if(action==='rate-pain'&&data.active&&data.active.mode!=='paused')togglePause();return;}
     if(action==='skip-step'){if(data.active?.mode==='paused')return;doneStep(true);return;}
     if(action==='skip-rest'){if(data.active?.mode==='paused' && data.active.previousMode==='rest') data.active.mode='rest';startFromRest();return;}
     if(action==='pause'){togglePause();return;}
     if(action==='prev'){goBack();return;}
+    if(action==='expand-media'){
+      const id=button.dataset.id||currentStep()?.id;if(!exercise[id])return;
+      detailExerciseId=id;if(data.active&&data.active.mode!=='paused')togglePause();
+      modal='media';render();root.querySelector?.('.workout .exercise-real-video')?.pause?.();root.querySelector?.('.media-close')?.focus?.();return;
+    }
     if(action==='details'){
       detailExerciseId=button.dataset.id||currentStep()?.id||null;
       if(!exercise[detailExerciseId])return;
@@ -739,6 +740,7 @@
       resetAllData();return;
     }
   });
+  root.addEventListener('keydown',event=>{if(event.key==='Escape'&&modal==='media'){modal=null;render();root.querySelector?.('.media-expand')?.focus?.();}});
   root.addEventListener('error',event=>{
     if(event.target?.matches?.('video.exercise-real-video, video.exercise-preview-video')){
       const video=event.target;
@@ -747,8 +749,8 @@
     }
   },true);
   root.addEventListener('submit',event => {
-    const form=event.target;if(!['profile-form','weight-form','target-form','walking-form'].includes(form.id))return;event.preventDefault();
-    if(form.id==='walking-form'){const fd=new FormData(form);saveWalking(String(fd.get('date')||''),fd.get('minutes'),String(fd.get('intensity')||''));return;}
+    const form=event.target;if(!['profile-form','weight-form','target-form'].includes(form.id))return;event.preventDefault();
+
     if(form.id==='profile-form'){saveProfile(form);return;}
     if(form.id==='weight-form'){
       const fields=new FormData(form);saveWeight(String(fields.get('date')||''),fields.get('weight'));return;
