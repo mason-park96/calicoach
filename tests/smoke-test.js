@@ -37,6 +37,17 @@ function boot(local=new Storage(),tab=new Storage()){
 }
 function form(name,overrides={}){return {fields:{name,gender:'남성',birthdate:'1996-07-12',height:'184',weight:'92',targetWeight:'80',level:'intermediate',days:'3',minutes:'30',focus:'balanced',pushups:'12',area:['back','foot'],...overrides}}}
 const one=boot();assert.equal(one.api.getState().view,'profile');
+const decimalWeight=boot();
+assert.equal(decimalWeight.api.saveProfile(form('소수점 확인',{weight:'72.5',targetWeight:'65,5'})),true);
+assert.equal(decimalWeight.api.getState().data.profile.weight,72.5);
+assert.equal(decimalWeight.api.getState().data.profile.targetWeight,65.5);
+assert.equal(decimalWeight.api.saveWeight('2024-02-29','71.3'),true);
+assert.equal(decimalWeight.api.saveWeight('2024-03-01','70,8'),true);
+assert.equal(decimalWeight.api.saveWeight('2024-03-02','70..8'),false);
+assert.equal(decimalWeight.api.saveWeight('2024-03-02','29.9'),false);
+assert.equal(boot(decimalWeight.local).api.getState().data.weights.find(w=>w.date==='2024-03-01').weight,70.8);
+decimalWeight.handlers.click({target:{closest:()=>({dataset:{action:'nav',value:'weight'}})}});
+assert(decimalWeight.root.innerHTML.includes('type="text" inputmode="decimal"'));
 assert(one.root.innerHTML.includes('목·경추'));assert(one.root.innerHTML.includes('발바닥·발뒤꿈치'));
 assert.equal(one.api.saveProfile(form('박무승')),true);
 assert.equal(one.api.getState().data.profile.adjustAreas.length,2);

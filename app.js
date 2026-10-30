@@ -219,6 +219,11 @@
     const [year,month,day]=birthdate.split('-').map(Number),today=new Date();
     return today.getFullYear()-year-(today.getMonth()+1<month||(today.getMonth()+1===month&&today.getDate()<day)?1:0);
   }
+  const weightInputAttrs='inputmode="decimal" pattern="[0-9]+([.,][0-9])?" maxlength="5"';
+  function parseWeight(value){
+    const text=String(value??'').trim();
+    return /^[0-9]+([.,][0-9])?$/.test(text)?Number(text.replace(',','.')):NaN;
+  }
   function formField(label,name,type,value,extra=''){
     return `<label class="profile-field${type==='date'?' date-field':''}"><span>${label}</span><input class="textinput" name="${name}" type="${type}" value="${escapeHtml(value??'')}" ${extra} required/></label>`;
   }
@@ -245,7 +250,7 @@
       <form id="profile-form" class="card formbox profile-form">
         <label class="profile-field"><span>이름</span><input class="textinput" name="name" type="text" value="${escapeHtml(p.name)}" placeholder="사용할 이름 입력" autocomplete="name" maxlength="30" required/></label>
         <label class="profile-field"><span>성별 (선택)</span><select class="textinput" name="gender">${option('gender','','선택하지 않음')}${option('gender','남성','남성')}${option('gender','여성','여성')}${option('gender','기타','기타')}</select></label>
-        <div class="form-grid">${formField('생년월일','birthdate','date',p.birthdate,'min="1930-01-01" max="'+dateStr()+'"')}${formField('키 (cm)','height','number',p.height,'min="120" max="230" step="0.1"')}${formField('현재 체중 (kg)','weight','number',data.profile?latestWeight():p.weight,'min="30" max="250" step="0.1"')}${formField('목표 체중 (kg)','targetWeight','number',p.targetWeight,'min="30" max="250" step="0.1"')}</div>
+        <div class="form-grid">${formField('생년월일','birthdate','date',p.birthdate,'min="1930-01-01" max="'+dateStr()+'"')}${formField('키 (cm)','height','number',p.height,'min="120" max="230" step="0.1"')}${formField('현재 체중 (kg)','weight','text',data.profile?latestWeight():p.weight,weightInputAttrs)}${formField('목표 체중 (kg)','targetWeight','text',p.targetWeight,weightInputAttrs)}</div>
         <label class="profile-field"><span>운동 수준</span><select class="textinput" name="level">${option('level','beginner','초급')}${option('level','intermediate','중급')}${option('level','advanced','고급')}</select></label>
         <details class="profile-optional"><summary>운동 환경·불편 부위</summary><label class="profile-field"><span>푸시업 최대 횟수 (선택)</span><input class="textinput" name="pushups" type="number" min="0" max="100" step="1" placeholder="미측정이면 비워두세요" value="${escapeHtml(p.pushups??'')}"/></label>
         <div class="profile-field"><span>운동 환경</span><div class="area-grid">${[['stableChair','벽에 고정한 의자'],['stableSurface','고정된 높은 지지대'],['singleLegReady','스플릿 스쿼트 가능'],['sidePlankReady','사이드 플랭크 가능']].map(([id,label])=>`<label class="check-row"><input type="checkbox" name="${id}" ${p[id]?'checked':''}/>${label}</label>`).join('')}</div><small class="field-description">주 4~5회는 걷기·회복일을 포함합니다.</small></div>
@@ -264,7 +269,7 @@
       </form></div>`;
   }
   function saveProfile(form){
-    const fd=new FormData(form),name=String(fd.get('name')||'').trim(),gender=String(fd.get('gender')||''),birthdate=String(fd.get('birthdate')||''),height=Number(fd.get('height')),weight=Number(fd.get('weight')),targetWeight=Number(fd.get('targetWeight'));
+    const fd=new FormData(form),name=String(fd.get('name')||'').trim(),gender=String(fd.get('gender')||''),birthdate=String(fd.get('birthdate')||''),height=Number(fd.get('height')),weight=parseWeight(fd.get('weight')),targetWeight=parseWeight(fd.get('targetWeight'));
     const level=String(fd.get('level')||''),days=Number(fd.get('days')),minutes=Number(fd.get('minutes')),focus=String(fd.get('focus')||'');
     const rawPushups=String(fd.get('pushups')??data.profile?.pushups??'').trim(),pushups=rawPushups===''?'':Number(rawPushups);
     const err=document.getElementById('profile-error');
@@ -397,7 +402,7 @@
     return `<div class="shell">${header()}<div class="pageintro"><h1>체중 기록</h1></div>
       ${weightMessage?`<div class="profile-applied" role="status">${escapeHtml(weightMessage)}</div>`:''}
       <div class="card formbox"><div class="row-between"><div><div class="metric-label">최근 체중${latest?' · '+humanDate(latest.date):''}</div><div class="metric-value">${latest?.weight??latestWeight()}<small>kg</small></div></div><span class="pill">목표 ${goalWeight()}kg</span></div>
-      <form id="weight-form" class="weight-form"><label class="profile-field date-field"><span>측정 날짜</span><input class="textinput" name="date" type="date" value="${dateStr()}" max="${dateStr()}" required/></label><label class="profile-field"><span>체중 (kg)</span><input name="weight" class="textinput" inputmode="decimal" type="number" min="30" max="250" step="0.1" value="${latest?.weight??latestWeight()}" required/></label><button class="btn btn-primary btn-full" type="submit">체중 저장</button></form><p class="fineprint">같은 날짜는 덮어씁니다.</p></div>
+      <form id="weight-form" class="weight-form"><label class="profile-field date-field"><span>측정 날짜</span><input class="textinput" name="date" type="date" value="${dateStr()}" max="${dateStr()}" required/></label><label class="profile-field"><span>체중 (kg)</span><input name="weight" class="textinput" type="text" ${weightInputAttrs} value="${latest?.weight??latestWeight()}" required/></label><button class="btn btn-primary btn-full" type="submit">체중 저장</button></form><p class="fineprint">같은 날짜는 덮어씁니다.</p></div>
       ${monthControl('weight',weightMonth)}
       <div class="metrics"><div class="card metric"><div class="metric-label">이 달 첫 측정 대비</div><div class="metric-value">${monthChange===null?'—':signed(monthChange,1)}<small>kg</small></div></div><div class="card metric"><div class="metric-label">최초 기록 대비 · 최근 체중</div><div class="metric-value">${latest?signed(latest.totalRate):'—'}<small>%</small></div></div></div>
       <div class="card formbox">${chartHtml(records)}</div>
@@ -620,7 +625,7 @@
     }catch(err){modal=null;render();alert(`이전 기록을 가져올 수 없습니다: ${err.message}`);}
   }
   function saveWeight(recordDate,value){
-    const weight=Number(value);
+    const weight=parseWeight(value);
     if(!validRecordDate(recordDate)||recordDate>dateStr()){
       alert('오늘까지의 올바른 측정 날짜를 선택해주세요.');return false;
     }
@@ -755,7 +760,7 @@
     if(form.id==='weight-form'){
       const fields=new FormData(form);saveWeight(String(fields.get('date')||''),fields.get('weight'));return;
     }
-    const target=Number($('#target')?.value);
+    const target=parseWeight($('#target')?.value);
     if(!Number.isFinite(target)||target<30||target>250){alert('목표 체중은 30~250kg 범위에서 입력해주세요.');return;}
     data.settings.targetWeight=target;if(data.profile)data.profile.targetWeight=target;save();render();
   });
