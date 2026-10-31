@@ -28,10 +28,10 @@ class Storage{constructor(){this.map={}}get length(){return Object.keys(this.map
 const guideContext={window:{}};vm.runInNewContext(fs.readFileSync(path.join(rootDir,'exercise-guides.js'),'utf8'),guideContext);
 const videoContext={window:{}};vm.runInNewContext(fs.readFileSync(path.join(rootDir,'video-catalog.js'),'utf8'),videoContext);
 const code=fs.readFileSync(path.join(rootDir,'app.js'),'utf8').replace('  render();setInterval(tick,250);', '  globalThis.TEST={getState:()=>({view,data:structuredClone(data),html:root.innerHTML}),saveProfile,startSession,completeSession,planFor,buildSteps,render,saveWeight,weightChanges,monthlyWorkouts,shiftMonth,recordSet,doneStep,tick,restore,handleImport,setTrainingLevel};render();setInterval(tick,250);');
-function boot(local=new Storage(),tab=new Storage()){
+function boot(local=new Storage(),tab=new Storage(),AudioContext=null){
  const handlers={};const root={innerHTML:'',addEventListener:(name,fn)=>{handlers[name]=fn}};
  const document={getElementById:id=>id==='app'?root:null,addEventListener:()=>{},querySelector:()=>null};
- const window={scrollTo:()=>{},addEventListener:()=>{},AudioContext:null,webkitAudioContext:null,CalicoachEngine:engine,CalicoachGuides:guideContext.window.CalicoachGuides,CalicoachVideoCatalog:videoContext.window.CalicoachVideoCatalog};
+ const window={scrollTo:()=>{},addEventListener:()=>{},AudioContext,webkitAudioContext:null,CalicoachEngine:engine,CalicoachGuides:guideContext.window.CalicoachGuides,CalicoachVideoCatalog:videoContext.window.CalicoachVideoCatalog};
  const ctx={console,localStorage:local,sessionStorage:tab,window,document,navigator:{},location:{protocol:'file:'},setInterval:()=>{},setTimeout:()=>{},Date,Math,Number,String,Boolean,Object,Array,JSON,RegExp,Error,Blob,URL,structuredClone,FormData:class{constructor(form){this.fields=form.fields}get(k){return this.fields[k]}getAll(k){return this.fields[k]||[]}has(k){return Boolean(this.fields[k])}},alert:()=>{}};
  ctx.globalThis=ctx;vm.runInNewContext(code,ctx,{timeout:2000});return {api:ctx.TEST,root,local,handlers,document};
 }
@@ -360,3 +360,40 @@ const gifViewer=bootAtMain();click(gifViewer,'expand-media','squat');
 assert(gifViewer.root.innerHTML.includes('src="./media/squat.gif"'),'Expanded view also supports GIF fallback');
 videoContext.window.CalicoachVideoCatalog=savedVideoCatalog;
 console.log('PASS timed media pause and GIF fallback');
+
+// Verify the actual transition handlers schedule distinct chimes and respect mute.
+const playedNotes=[];
+class TestAudioContext{
+ constructor(){this.state='running';this.currentTime=10;this.destination={};}
+ createOscillator(){const note={frequency:{value:0},connect(){},disconnect(){},start(time){playedNotes.push({frequency:this.frequency.value,time});},stop(){}};return note;}
+ createGain(){return {gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){},disconnect(){}};}
+ resume(){this.state='running';return Promise.resolve();}
+}
+const audioApp=boot(bootAtMain().local,new Storage(),TestAudioContext);
+click(audioApp,'done');
+assert.equal(audioApp.api.getState().data.active.mode,'rest');
+assert.deepEqual(playedNotes.map(n=>n.frequency),[392,329.63]);
+playedNotes.length=0;
+click(audioApp,'skip-rest');
+assert.deepEqual(playedNotes.map(n=>n.frequency),[523.25,659.25,783.99]);
+assert(playedNotes.every((note,index)=>index===0||note.time>playedNotes[index-1].time));
+playedNotes.length=0;
+audioApp.handlers.change({target:{dataset:{setting:'sound'},checked:false,matches:()=>true}});
+click(audioApp,'done');click(audioApp,'skip-rest');
+assert.equal(playedNotes.length,0,'Muted transitions remain silent');
+audioApp.handlers.change({target:{dataset:{setting:'sound'},checked:true,matches:()=>true}});
+assert.equal(playedNotes.length,3,'Enabling effects previews the chime');
+playedNotes.length=0;
+audioApp.api.completeSession();
+assert.equal(playedNotes.length,4,'Completion has its own chime');
+console.log('PASS audio: distinct workout/rest/finish chimes, scheduled notes, mute and preview');
+async function testSuspendedAudio(){
+ class SuspendedAudio extends TestAudioContext{constructor(){super();this.state='suspended';}resume(){return Promise.resolve().then(()=>{this.state='running';});}}
+ playedNotes.length=0;
+ const resumed=boot(bootAtMain().local,new Storage(),SuspendedAudio);
+ click(resumed,'done');
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(playedNotes.map(n=>n.frequency),[392,329.63],'Transition waits for audio context to resume');
+ console.log('PASS audio: suspended context resumes before scheduling');
+}
+testSuspendedAudio().catch(error=>{console.error(error);process.exitCode=1;});

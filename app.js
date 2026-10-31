@@ -417,7 +417,7 @@
     return `<div class="shell">${header()}<div class="pageintro"><h1>설정</h1></div>
     <div class="sectionline"><div class="sectiontitle">운동 수준</div></div><section class="card formbox"><div class="level-picker" role="group" aria-label="운동 수준 선택">${[['beginner','초급'],['intermediate','중급'],['advanced','고급']].map(([level,label])=>`<button class="level-option" type="button" data-action="set-level" data-level="${level}" aria-pressed="${Coach.trainingLevel(data.profile)===level}">${label}</button>`).join('')}</div><p class="setting-help">${{beginner:'기초 동작 · 적은 운동량',intermediate:'무릎 푸시업 · 기본 근력',advanced:'일반 푸시업 · 한발 브리지'}[Coach.trainingLevel(data.profile)]}</p>${trainingLevelMessage?`<p class="profile-applied" role="status">${trainingLevelMessage}</p>`:''}</section>
     <details class="card formbox training-options"><summary>세트·휴식 설정</summary>${settingRow({name:'운동별 세트 조절',desc:'운동별 세트 가감',key:'setAdjustment',min:-1,max:1,value:s.setAdjustment||0})}${settingRow({name:'운동 사이 휴식',desc:'',key:'rest',min:45,max:180,step:15,value:s.rest,unit:'초'})}${settingRow({name:'같은 운동 연속 휴식',desc:'같은 종목을 이어 할 때',key:'longRest',min:60,max:180,step:15,value:s.longRest,unit:'초'})}</details>
-    <div class="sectionline"><div class="sectiontitle">알림</div></div><div class="card formbox"><div class="settings-row"><div><strong>효과음</strong><p>단계 전환 알림</p></div><input class="toggle" type="checkbox" data-setting="sound" aria-label="효과음" ${s.sound?'checked':''}/></div><div class="settings-row"><div><strong>한국어 음성 안내</strong><p>다음 동작 읽기</p></div><input class="toggle" type="checkbox" data-setting="speech" aria-label="음성 안내" ${s.speech?'checked':''}/></div></div>
+    <div class="sectionline"><div class="sectiontitle">알림</div></div><div class="card formbox"><div class="settings-row"><div><strong>효과음</strong><p>운동·휴식 시작 알림</p></div><input class="toggle" type="checkbox" data-setting="sound" aria-label="효과음" ${s.sound?'checked':''}/></div><div class="settings-row"><div><strong>한국어 음성 안내</strong><p>다음 동작 읽기</p></div><input class="toggle" type="checkbox" data-setting="speech" aria-label="음성 안내" ${s.speech?'checked':''}/></div></div>
     <p class="setting-help">소리·음성은 기기 설정에 따라 제한될 수 있습니다.</p>
     <div class="sectionline"><div class="sectiontitle">내 신체정보</div></div><div class="card formbox"><div class="settings-row"><div><strong>${escapeHtml(data.profile?.name||'')} ${data.profile?.gender?'· '+escapeHtml(data.profile.gender):''}</strong><p>만 ${profileAge(data.profile?.birthdate)}세 · 키 ${data.profile?.height}cm · 목표 체중 ${goalWeight()}kg</p></div><button class="btn btn-outline" data-action="go-profile">수정</button></div></div>
         <div class="sectionline"><div class="sectiontitle">내 데이터</div></div><div class="card formbox"><button class="btn btn-outline btn-full" data-action="export">↓ 데이터 백업</button><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="import">↑ 백업 복원</button><input type="file" accept="application/json,.json" id="backup-file" class="hidden"/><div style="height:10px"></div><button class="btn btn-outline btn-full" data-action="records-reset-confirm">기록·설정 초기화</button><p class="fineprint">프로필 유지 · 기록과 설정 초기화</p><button class="btn btn-ghost btn-full" data-action="reset-confirm">프로필 포함 전체 초기화</button><p class="fineprint">프로필 포함 모두 삭제</p></div>
@@ -483,8 +483,40 @@
     return '';
   }
   function render(){const html=view==='profile'?renderProfile():view==='workout'?renderWorkout():view==='finish'?renderFinish():view==='history'?renderHistory():view==='weight'?renderWeight():view==='settings'?renderSettings():renderHome();root.innerHTML=html+modalHtml();document.title=`칼리코치 · ${view==='profile'?'신체정보':view==='workout'?'운동 중':view==='history'?'월별 운동 기록':view==='weight'?'체중 기록':'내 운동 앱'}`;}
-  function ensureAudio(){if(!data.settings.sound)return;try {const Ctx = window.AudioContext||window.webkitAudioContext;if(Ctx){audioContext=audioContext||new Ctx();if(audioContext.state==='suspended')audioContext.resume().catch(()=>{});}}catch{}}
-  function beep(){if(!data.settings.sound || !audioContext || audioContext.state!=='running')return;try{const oscillator=audioContext.createOscillator(),volume=audioContext.createGain();oscillator.type='sine';oscillator.frequency.value=780;volume.gain.setValueAtTime(.0001,audioContext.currentTime);volume.gain.exponentialRampToValueAtTime(.085,audioContext.currentTime+.03);volume.gain.exponentialRampToValueAtTime(.0001,audioContext.currentTime+.22);oscillator.connect(volume);volume.connect(audioContext.destination);oscillator.start();oscillator.stop(audioContext.currentTime+.23);}catch{}}
+  let soundSequence=0;
+  function ensureAudio(){
+    if(!data.settings.sound)return null;
+    try{
+      const Ctx=window.AudioContext||window.webkitAudioContext;
+      if(!Ctx)return null;
+      if(!audioContext||audioContext.state==='closed')audioContext=new Ctx();
+      if(audioContext.state==='suspended'||audioContext.state==='interrupted')return audioContext.resume().catch(()=>{});
+    }catch{}
+    return null;
+  }
+  function beep(kind='work'){
+    const sequence=++soundSequence;
+    const play=()=>{
+      if(sequence!==soundSequence||!data.settings.sound||audioContext?.state!=='running')return;
+      // Quiet sine chimes: rising for work, falling for rest, a longer phrase on completion.
+      const notes=kind==='rest'?[392,329.63]:kind==='finish'?[523.25,659.25,783.99,1046.5]:[523.25,659.25,783.99];
+      try{
+        const now=audioContext.currentTime;
+        notes.forEach((frequency,index)=>{
+          const start=now+index*.15,oscillator=audioContext.createOscillator(),volume=audioContext.createGain();
+          oscillator.type='sine';oscillator.frequency.value=frequency;
+          volume.gain.setValueAtTime(.0001,start);
+          volume.gain.exponentialRampToValueAtTime(.075,start+.025);
+          volume.gain.exponentialRampToValueAtTime(.0001,start+.3);
+          oscillator.connect(volume);volume.connect(audioContext.destination);
+          oscillator.onended=()=>{oscillator.disconnect();volume.disconnect();};
+          oscillator.start(start);oscillator.stop(start+.32);
+        });
+      }catch{}
+    };
+    const resumed=ensureAudio();
+    if(resumed?.then)resumed.then(play).catch(()=>{});else play();
+  }
   function speak(message) {
     if(!data.settings.speech||!('speechSynthesis' in window))return;
     try {window.speechSynthesis.cancel();const utterance = new SpeechSynthesisUtterance(message);utterance.lang='ko-KR';utterance.rate=1.04;utterance.volume=.9;window.speechSynthesis.speak(utterance);}catch{}
@@ -509,7 +541,7 @@
     const definition=planFor(plan,light),steps=Coach.buildSteps(definition,data.profile,data.progress);
     if(!definition.slots.length){alert('수행 가능한 본운동이 없습니다. 불편 부위와 제외된 운동을 확인하고 오늘은 회복 활동을 선택하세요.');return;}
     data.active={version:2,level:Coach.trainingLevel(data.profile),trainingRevision:data.trainingRevision||0,plan,light,rounds:definition.rounds,prescription:structuredClone(definition),steps,originalSteps:structuredClone(steps),index:0,completedSteps:0,feedback:{},draft:{},mode:'work',previousMode:null,startedAt:Date.now(),timerEndAt:Date.now()+60000,remaining:null};
-    view='workout';modal=null;save();ensureAudio();speak('준비운동 시작. 어깨와 팔을 가볍게 풀어주세요.');render();keepAwake();
+    view='workout';modal=null;save();beep();speak('준비운동 시작. 어깨와 팔을 가볍게 풀어주세요.');render();keepAwake();
   }
   function doneStep(isSkip=false,preserveRecord=false){
     const a=data.active;if(!a || a.mode!=='work')return;
@@ -525,7 +557,7 @@
     let rest=0;
     if(prior.phase==='main' && (next.phase==='main'||next.phase==='bonus'))rest=next.pairOf===prior.id?15:next.id===prior.id?num(a.prescription?.longRest||a.legacyLongRest||data.settings.longRest,a.legacyLongRest?20:60,180):num(next.rest||a.legacyRest||data.settings.rest,a.legacyRest?10:45,180);
     else if(prior.phase==='bonus'&& next.phase==='bonus')rest=20;
-    if(rest>0){a.mode='rest';a.restStartedAt=Date.now();a.previousMode=null;a.timerEndAt=Date.now()+rest*1000;a.remaining=null;save();beep();render();}
+    if(rest>0){a.mode='rest';a.restStartedAt=Date.now();a.previousMode=null;a.timerEndAt=Date.now()+rest*1000;a.remaining=null;save();beep('rest');render();}
     else activateCurrent();
   }
   function recordSet(vote){
@@ -566,7 +598,7 @@
     const progressFeedback=changedLevel?Object.fromEntries(Object.entries(a.feedback||{}).filter(([,r])=>r.vote==='pain')):a.light?Object.fromEntries(Object.entries(a.feedback||{}).filter(([,r])=>['hard','pain'].includes(r.vote))):a.feedback||{};
     data.progress=Coach.applyFeedback(data.progress||{},steps,progressFeedback,data.profile);
     lastFinished={version:2,plan:a.plan,light:!!a.light,completedAt:new Date().toISOString(),minutes:Math.max(1,Math.round((Date.now()-a.startedAt)/60000)),stepsCompleted:a.completedSteps||0,totalSteps:currentSteps().length,prescription:a.prescription||null,steps:a.originalSteps||steps,feedback:a.feedback||{}};
-    data.workouts.push(lastFinished);if(!a.light)data.programIndex=(data.programIndex||0)+1;data.nextPlan=Coach.nextPlan(data.programIndex,data.profile?.days);data.active=null;modal=null;view='finish';releaseWake();save();beep();speak('운동 완료. 오늘도 수고하셨습니다.');render();
+    data.workouts.push(lastFinished);if(!a.light)data.programIndex=(data.programIndex||0)+1;data.nextPlan=Coach.nextPlan(data.programIndex,data.profile?.days);data.active=null;modal=null;view='finish';releaseWake();save();beep('finish');speak('운동 완료. 오늘도 수고하셨습니다.');render();
   }
   function tick(){const a=data.active;if(!a||view!=='workout'||a.mode==='paused')return;
     if(a.timerEndAt && Date.now()>=a.timerEndAt){if(a.mode==='rest')startFromRest();else if(a.mode==='work'&&exercise[currentStep().id].type==='timed')doneStep();return;}
@@ -678,6 +710,7 @@
     }
     const button=event.target.closest('[data-action]');if(!button)return;
     const action=button.dataset.action;
+    if(view==='workout')ensureAudio()?.catch?.(()=>{});
     if(action==='video-speed'){
       const video=root.querySelector('.guide-modal .exercise-real-video');
       if(video){video.playbackRate=Number(button.dataset.speed)||1;}
@@ -772,7 +805,7 @@
       if(target.dataset.monthKind==='weight'){weightMonth=target.value;weightMessage='';}
       render();return;
     }
-    if(target.matches('[data-setting]')) {data.settings[target.dataset.setting]=target.checked;save();}
+    if(target.matches('[data-setting]')) {data.settings[target.dataset.setting]=target.checked;save();if(target.dataset.setting==='sound'){if(target.checked)beep();else soundSequence++;}}
     if(target.id==='backup-file')handleImport(target);
   });
   root.addEventListener('input',event=>{const t=event.target;if(t.dataset?.actual&&data.active?.mode==='work'){data.active.draft=data.active.draft||{};data.active.draft[t.dataset.actual]=t.value;save();}});
