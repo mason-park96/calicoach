@@ -219,10 +219,10 @@
     const [year,month,day]=birthdate.split('-').map(Number),today=new Date();
     return today.getFullYear()-year-(today.getMonth()+1<month||(today.getMonth()+1===month&&today.getDate()<day)?1:0);
   }
-  const weightInputAttrs='inputmode="decimal" pattern="[0-9]+([.,][0-9])?" maxlength="5"';
+  const weightInputAttrs='inputmode="decimal" pattern="[0-9]+([.,][0-9]+)?"';
   function parseWeight(value){
     const text=String(value??'').trim();
-    return /^[0-9]+([.,][0-9])?$/.test(text)?Number(text.replace(',','.')):NaN;
+    return /^[0-9]+([.,][0-9]+)?$/.test(text)?Number(text.replace(',','.')):NaN;
   }
   function formField(label,name,type,value,extra=''){
     return `<label class="profile-field${type==='date'?' date-field':''}"><span>${label}</span><input class="textinput" name="${name}" type="${type}" value="${escapeHtml(value??'')}" ${extra} required/></label>`;
@@ -289,7 +289,7 @@
     else if(Number(previous.minutes)!==minutes && data.settings.rounds===recommendedRounds(previous))data.settings.rounds=recommendedRounds(data.profile);
     if(wasNew){data.settings.rest=60;data.settings.longRest=90;}
     // 신체정보의 체중 수정은 당일 체중 기록에도 반영됩니다.
-    if(wasNew || Math.abs(latestWeight()-weight)>.0001){data.weights=data.weights.filter(w=>w.date!==dateStr());data.weights.push({date:dateStr(),weight});}
+    if(wasNew || latestWeight()!==weight){data.weights=data.weights.filter(w=>w.date!==dateStr());data.weights.push({date:dateStr(),weight});}
     if(!save())return fail('기기 저장소에 저장할 수 없습니다. 브라우저의 저장 공간 및 개인정보 보호 설정을 확인해주세요.');
     profileAppliedMessage=true;view='home';window.scrollTo(0,0);render();return true;
   }
@@ -404,11 +404,11 @@
       <div class="card formbox"><div class="row-between"><div><div class="metric-label">최근 체중${latest?' · '+humanDate(latest.date):''}</div><div class="metric-value">${latest?.weight??latestWeight()}<small>kg</small></div></div><span class="pill">목표 ${goalWeight()}kg</span></div>
       <form id="weight-form" class="weight-form"><label class="profile-field date-field"><span>측정 날짜</span><input class="textinput" name="date" type="date" value="${dateStr()}" max="${dateStr()}" required/></label><label class="profile-field"><span>체중 (kg)</span><input name="weight" class="textinput" type="text" ${weightInputAttrs} value="${latest?.weight??latestWeight()}" required/></label><button class="btn btn-primary btn-full" type="submit">체중 저장</button></form><p class="fineprint">같은 날짜는 덮어씁니다.</p></div>
       ${monthControl('weight',weightMonth)}
-      <div class="metrics"><div class="card metric"><div class="metric-label">이 달 첫 측정 대비</div><div class="metric-value">${monthChange===null?'—':signed(monthChange,1)}<small>kg</small></div></div><div class="card metric"><div class="metric-label">최초 기록 대비 · 최근 체중</div><div class="metric-value">${latest?signed(latest.totalRate):'—'}<small>%</small></div></div></div>
+      <div class="metrics"><div class="card metric"><div class="metric-label">이 달 첫 측정 대비</div><div class="metric-value">${monthChange===null?'—':signed(monthChange,2)}<small>kg</small></div></div><div class="card metric"><div class="metric-label">최초 기록 대비 · 최근 체중</div><div class="metric-value">${latest?signed(latest.totalRate):'—'}<small>%</small></div></div></div>
       <div class="card formbox">${chartHtml(records)}</div>
       <div class="sectionline"><div class="sectiontitle">날짜별 변동률</div><div class="smallhint">${records.length}개 기록</div></div>
-      <div class="card weight-table-wrap"><table class="weight-table"><thead><tr><th scope="col">날짜</th><th scope="col">체중</th><th scope="col">직전 측정 대비</th><th scope="col">최초 대비</th></tr></thead><tbody>${records.length?[...records].reverse().map(item=>`<tr><th scope="row">${item.date}</th><td>${item.weight.toFixed(1)}kg</td><td>${item.rate===null?'—':`${signed(item.rate)}%<small>${signed(item.delta,1)}kg</small>`}</td><td>${signed(item.totalRate)}%</td></tr>`).join(''):'<tr><td colspan="4" class="empty">이 달에는 체중 기록이 없습니다.</td></tr>'}</tbody></table></div>
-      <details class="training-options"><summary>변화율 기준</summary><p class="fineprint">직전 대비: 이전 측정값과 비교.${baseline?` 최초 대비: ${baseline.date}의 ${baseline.weight.toFixed(1)}kg과 비교.`:''} + 증가 · − 감소</p></details></div>${navigation('weight')}`;
+      <div class="card weight-table-wrap"><table class="weight-table"><thead><tr><th scope="col">날짜</th><th scope="col">체중</th><th scope="col">직전 측정 대비</th><th scope="col">최초 대비</th></tr></thead><tbody>${records.length?[...records].reverse().map(item=>`<tr><th scope="row">${item.date}</th><td>${item.weight}kg</td><td>${item.rate===null?'—':`${signed(item.rate)}%<small>${signed(item.delta,2)}kg</small>`}</td><td>${signed(item.totalRate)}%</td></tr>`).join(''):'<tr><td colspan="4" class="empty">이 달에는 체중 기록이 없습니다.</td></tr>'}</tbody></table></div>
+      <details class="training-options"><summary>변화율 기준</summary><p class="fineprint">직전 대비: 이전 측정값과 비교.${baseline?` 최초 대비: ${baseline.date}의 ${baseline.weight}kg과 비교.`:''} + 증가 · − 감소</p></details></div>${navigation('weight')}`;
   }
   function settingRow({name,desc,action,key,min,max,step=1,value,unit=''}) {
     return `<div class="settings-row"><div><strong>${name}</strong>${desc?`<p>${desc}</p>`:''}</div><div class="numberstep"><button class="stepbtn" data-action="setting-step" data-key="${key}" data-delta="-${step}" ${value<=min?'disabled':''}>−</button><span class="stepvalue">${value}${unit}</span><button class="stepbtn" data-action="setting-step" data-key="${key}" data-delta="${step}" ${value>=max?'disabled':''}>+</button></div></div>`;
@@ -634,7 +634,7 @@
     }
     const previous=JSON.parse(JSON.stringify(data));
     const existed=data.weights.some(item=>item.date===recordDate);
-    data.weights=[...weightRecords().filter(item=>item.date!==recordDate),{date:recordDate,weight:Math.round(weight*10)/10}].sort((a,b)=>a.date.localeCompare(b.date));
+    data.weights=[...weightRecords().filter(item=>item.date!==recordDate),{date:recordDate,weight}].sort((a,b)=>a.date.localeCompare(b.date));
     if(data.profile)data.profile.weight=latestWeight();
     if(!save()){data=previous;alert('체중을 저장하지 못했습니다. 기기 저장 공간을 확인해주세요.');return false;}
     weightMonth=recordDate.slice(0,7);weightMessage=`${humanDate(recordDate)} 체중을 ${existed?'수정':'저장'}했습니다.`;render();return true;
